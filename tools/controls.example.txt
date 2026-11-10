@@ -1,0 +1,8 @@
+# Botón -> toque en la pantalla, en coordenadas de lo que se ve (480x320 si el juego es apaisado,
+# 320x480 si es vertical; origen arriba a la izquierda). Máximo 6 líneas. Se edita por FTP en
+# ux0:data/<slug>/controls.txt sin recompilar. El stick izquierdo es el acelerómetro (inclinación).
+# SELECT+START sostenidos 2 s cambian la rotación de la imagen (se guarda en rotation.txt).
+CROSS 430 270
+CIRCLE 50 270
+SQUARE 430 50
+START 240 160
