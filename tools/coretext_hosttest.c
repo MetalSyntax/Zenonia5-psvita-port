@@ -103,6 +103,12 @@ int main(void) {
     cg_SetLineWidth(NULL, 2);
     cg_DrawPath(buf, 2);
     assert(dump() > 10);
+    // un " " suelto mide su avance (cocos2d mide el texto con borde carácter por carácter)
+    s_sizeWithFontConstrained(&sz, ns_str(" "), NULL, f, (CGSize){0, 0});
+    assert(sz.w > 0);
+    // tildes y ñ salen de la fuente (tools/merge_latin_font.py), no del glifo vacío .notdef
+    uint16_t acc[3] = {0xF3, 0xF1, 0xC1}, ga[3];
+    assert(ct_FontGetGlyphsForCharacters(f, acc, ga, 3));
     printf("ascent %.1f descent %.1f leading %.1f\n", ct_FontGetAscent(f), ct_FontGetDescent(f), ct_FontGetLeading(f));
     puts("OK");
     return 0;

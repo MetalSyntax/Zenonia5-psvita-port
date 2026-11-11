@@ -41,7 +41,8 @@ def push(ftp, local, remote, dry):
             ftp.mkd(remote)
         have = {}
     for n in sorted(os.listdir(local)):
-        if n.startswith('._') or n == '.DS_Store':
+        # exFAT de la Vita rechaza nombres con espacio/punto final (p.ej. "Ghay " del IPA)
+        if n.startswith('._') or n == '.DS_Store' or n.endswith((' ', '.')):
             continue
         lp, rp = os.path.join(local, n), remote + '/' + n
         if os.path.isdir(lp):

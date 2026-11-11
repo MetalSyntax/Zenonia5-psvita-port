@@ -15,6 +15,7 @@ id ns_str(const char *utf8);        // autoreleased
 const char *ns_cstr(id s);          // "" si no es NSString
 id ns_num_int(int64_t v);
 id ns_data_new(const void *bytes, int n); // NSMutableData +1 (copia)
+const void *ns_data_bytes(id d, int *len); // NULL si no es NSData
 id ns_array_new(void); // +1, mutable
 void ns_array_add(id a, id o);
 int ns_array_count(id a);

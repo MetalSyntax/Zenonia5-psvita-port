@@ -19,6 +19,7 @@
 #include <string.h>
 #include <vitaGL.h>
 
+#include "darwin.h"
 #include "gles.h"
 #include "hle.h"
 #include "imports.h"
@@ -268,7 +269,13 @@ static void e_glTexEnvfv(GLenum t, GLenum p, const GLfloat *v) {
     chk("glTexEnvfv", t, p);
 }
 static void e_glGetFloatv(GLenum p, GLfloat *v) { glGetFloatv(p, v); chk("glGetFloatv", p, 0); }
-static void e_glBindTexture(GLenum t, GLuint id) { glBindTexture(t, id); chk("glBindTexture", t, id); }
+static GLuint bound_tex0; // textura 2D de la unidad 0 (HUD oculto)
+static void e_glBindTexture(GLenum t, GLuint id) {
+    if (t == GL_TEXTURE_2D && server_unit == 0)
+        bound_tex0 = id;
+    glBindTexture(t, id);
+    chk("glBindTexture", t, id);
+}
 static void e_glActiveTexture(GLenum t) { server_unit = (t - GL_TEXTURE0) & 1; glActiveTexture(t); chk("glActiveTexture", t, 0); }
 
 // ponytail: trazado de UN frame (corrida 011: pantalla entera blanca con alfa 0). Quitar al verse bien.
@@ -342,13 +349,64 @@ static void trace_draw(const char *fn, GLenum mode, int count, int first) {
            pm[12], mv[0], mv[5], mv[12], mv[13], err0);
 }
 
+// ---------------------------------------------------------------- HUD táctil oculto (PORT_HUD_TEX)
+// Un draw con la textura del HUD se repite una vez por franja visible con scissor (cortado con el scissor
+// del juego si lo había): lo que cae fuera, los controles táctiles, no se dibuja. Siguen respondiendo al toque.
+int gles_hud_hidden = 1; // input.c: L+R
+#ifdef PORT_HUD_TEX
+static GLuint hud_tex;
+static const int hud_keep[][4] = PORT_HUD_KEEP;
+#define HUD_PASSES (int)(sizeof(hud_keep) / sizeof(hud_keep[0]))
+static GLint hud_sc[4];
+static GLboolean hud_sc_on;
+// pass < 0: ¿hay que partir este draw? (guarda el scissor). pass >= 0: aplica la franja; 0 si queda vacía.
+static int hud_pass(int pass) {
+    if (pass < 0) {
+        if (!gles_hud_hidden || !hud_tex || bound_tex0 != hud_tex)
+            return 0;
+        hud_sc_on = glIsEnabled(GL_SCISSOR_TEST);
+        glGetIntegerv(GL_SCISSOR_BOX, hud_sc);
+        glEnable(GL_SCISSOR_TEST);
+        return 1;
+    }
+    int x0 = hud_keep[pass][0], y0 = hud_keep[pass][1], x1 = x0 + hud_keep[pass][2], y1 = y0 + hud_keep[pass][3];
+    if (hud_sc_on) {
+        x0 = x0 > hud_sc[0] ? x0 : hud_sc[0], y0 = y0 > hud_sc[1] ? y0 : hud_sc[1];
+        x1 = x1 < hud_sc[0] + hud_sc[2] ? x1 : hud_sc[0] + hud_sc[2];
+        y1 = y1 < hud_sc[1] + hud_sc[3] ? y1 : hud_sc[1] + hud_sc[3];
+    }
+    if (x1 <= x0 || y1 <= y0)
+        return 0;
+    glScissor(x0, y0, x1 - x0, y1 - y0);
+    return 1;
+}
+static void hud_restore(void) {
+    glScissor(hud_sc[0], hud_sc[1], hud_sc[2], hud_sc[3]);
+    if (!hud_sc_on)
+        glDisable(GL_SCISSOR_TEST);
+}
+#define HUD_DRAW(call)                                                                                                 \
+    do {                                                                                                               \
+        if (hud_pass(-1)) {                                                                                            \
+            for (int p_ = 0; p_ < HUD_PASSES; p_++)                                                                    \
+                if (hud_pass(p_))                                                                                      \
+                    call;                                                                                              \
+            hud_restore();                                                                                             \
+        } else {                                                                                                       \
+            call;                                                                                                      \
+        }                                                                                                              \
+    } while (0)
+#else
+#define HUD_DRAW(call) call
+#endif
+
 static void g_glDrawArrays(GLenum mode, GLint first, GLsizei count) {
     trace_draw("DrawArrays", mode, count, first);
     draw_calls++;
     PROF(P_CONV, convert_fixed(first, first + count));
     int skinned;
     PROF(P_SKIN, skinned = skin(first, first + count));
-    PROF(P_DRAW, glDrawArrays(mode, first, count));
+    PROF(P_DRAW, HUD_DRAW(glDrawArrays(mode, first, count)));
     if (skinned)
         unskin();
 }
@@ -374,7 +432,7 @@ static void g_glDrawElements(GLenum mode, GLsizei count, GLenum type, const void
     }
     int skinned;
     PROF(P_SKIN, skinned = skin(mini > maxi ? 0 : mini, maxi + 1));
-    PROF(P_DRAW, glDrawElements(mode, count, type, idx));
+    PROF(P_DRAW, HUD_DRAW(glDrawElements(mode, count, type, idx)));
     if (skinned)
         unskin();
 }
@@ -952,6 +1010,12 @@ static int tex_logs;
 static void g_glTexImage2D(GLenum t, GLint lv, GLint ifmt, GLsizei w, GLsizei h, GLint b, GLenum fmt, GLenum ty,
                            const void *px) {
     PROF(P_TEX, glTexImage2D(t, lv, ifmt, w, h, b, fmt, ty, px));
+#ifdef PORT_HUD_TEX
+    if (lv == 0 && strstr(darwin_last_open, PORT_HUD_TEX) && bound_tex0) {
+        hud_tex = bound_tex0;
+        l_info("HUD táctil: textura %u (%s), oculto con L+R", hud_tex, darwin_last_open);
+    }
+#endif
     if (tex_logs < 60) {
         tex_logs++;
         l_info("glTexImage2D lv%d %dx%d ifmt 0x%X fmt 0x%X type 0x%X px %p -> err 0x%X", lv, w, h, ifmt, fmt, ty, px,
@@ -1078,6 +1142,7 @@ void gles_present(void) {
     glTexCoordPointer(2, GL_FLOAT, 0, uv_rot[gles_rotation()]);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     PROF(P_SWAP, vglSwapBuffers(ime_active()));
+    extern uint64_t ui_idle_us; // uikit.c
     static uint64_t prof_t0, prof_frames;
     prof_frames++;
     if (!prof_t0)
@@ -1085,15 +1150,16 @@ void gles_present(void) {
     else if (now_us() - prof_t0 > 5000000) {
         double f = prof_frames, tot = (now_us() - prof_t0) / 1000.0 / f;
         l_info("PERF %.1f fps | ms/frame: total %.1f conv %.1f skin %.1f(%u, %u vtx) draw %.1f(%u) buf %.1f(%u, %u KB) tex %.1f(%u) "
-               "swap %.1f | resto (juego) %.1f",
+               "swap %.1f | espera %.1f | resto (juego) %.1f",
                1000.0 / tot, tot, prof[P_CONV] / 1e3 / f, prof[P_SKIN] / 1e3 / f, (unsigned)(prof_n[P_SKIN] / f), (unsigned)(skin_vtx / f),
                prof[P_DRAW] / 1e3 / f, (unsigned)(prof_n[P_DRAW] / f), prof[P_BUF] / 1e3 / f, (unsigned)(prof_n[P_BUF] / f),
                (unsigned)(prof_bytes / 1024 / f), prof[P_TEX] / 1e3 / f, (unsigned)(prof_n[P_TEX] / f), prof[P_SWAP] / 1e3 / f,
-               tot - (prof[P_CONV] + prof[P_SKIN] + prof[P_DRAW] + prof[P_BUF] + prof[P_TEX] + prof[P_SWAP]) / 1e3 / f);
+               ui_idle_us / 1e3 / f,
+               tot - (prof[P_CONV] + prof[P_SKIN] + prof[P_DRAW] + prof[P_BUF] + prof[P_TEX] + prof[P_SWAP] + ui_idle_us) / 1e3 / f);
         if (envc_n)
             l_info("ENVCOLOR alfa %g .. %g (%u llamadas)", envc_min, envc_max, envc_n);
         envc_min = 1e9f, envc_max = -1e9f, envc_n = 0;
-        memset(prof, 0, sizeof(prof)), memset(prof_n, 0, sizeof(prof_n)), prof_bytes = 0, skin_vtx = 0;
+        memset(prof, 0, sizeof(prof)), memset(prof_n, 0, sizeof(prof_n)), prof_bytes = 0, skin_vtx = 0, ui_idle_us = 0;
         prof_frames = 0, prof_t0 = now_us();
     }
 

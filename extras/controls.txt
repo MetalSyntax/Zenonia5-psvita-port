@@ -1,0 +1,17 @@
+# Zenonia 5: botón -> toque en coordenadas de lo que se ve (568x320, apaisado, origen arriba a la izquierda).
+# Medido sobre la captura del juego en la Vita (960x544 -> x*0.592, y*0.588). Máximo 10 botones.
+# Se edita por FTP en ux0:data/zenonia5ios/controls.txt sin recompilar.
+# Stick izquierdo y cruceta: arrastran el joystick verde (centro x y, radio).
+STICK 69 252 32
+# Ataque (botón grande abajo a la derecha)
+CROSS 528 286
+# Habilidades alrededor del ataque
+SQUARE 499 222
+TRIANGLE 542 215
+CIRCLE 467 254
+RTRIGGER 462 296
+# Pausa
+START 551 136
+# Botón rojo de saltar (escenas, arriba a la derecha)
+SELECT 535 10
+LTRIGGER 535 10

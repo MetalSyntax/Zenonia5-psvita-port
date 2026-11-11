@@ -25,6 +25,7 @@
 extern void *__dynamic_cast(const void *, const void *, const void *, long); // libsupc++
 
 #include "darwin_printf.h"
+#include "darwin.h"
 #include "hle.h"
 #include "imports.h"
 #include "log.h"
@@ -71,8 +72,12 @@ const char *darwin_path(const char *in, char *out, size_t outlen) {
 }
 #define PATH(p) char path_buf[512]; const char *P = darwin_path(p, path_buf, sizeof(path_buf))
 
+volatile unsigned darwin_io_ops;
+char darwin_last_open[256]; // gles.c: reconoce texturas por el PNG que se acaba de abrir
 static FILE *d_fopen(const char *path, const char *mode) {
     PATH(path);
+    darwin_io_ops++;
+    snprintf(darwin_last_open, sizeof(darwin_last_open), "%s", P);
     FILE *f = fopen(P, mode);
     l_debug("fopen(%s, %s) -> %p", P, mode, f);
     return f;
@@ -132,6 +137,17 @@ static int d_open(const char *path, int flags, int mode) {
     return open(P, f, mode);
 }
 
+#if PORT_STAT_INO64
+// struct stat de iOS con _DARWIN_FEATURE_64_BIT_INODE (el juego lee st_mode en +4 y st_size en +0x3c).
+typedef struct __attribute__((packed)) {
+    int32_t st_dev;
+    uint16_t st_mode, st_nlink;
+    uint64_t st_ino;
+    uint32_t st_uid, st_gid;
+    int32_t st_rdev;
+    int32_t st_atime_, st_atime_ns, st_mtime_, st_mtime_ns, st_ctime_, st_ctime_ns, st_birth, st_birth_ns;
+    int64_t st_size, st_blocks;
+#else
 // struct stat de Darwin (32 bits, ino32): 96 bytes, int64 alineados a 4.
 typedef struct __attribute__((packed)) {
     int32_t st_dev;
@@ -141,11 +157,15 @@ typedef struct __attribute__((packed)) {
     int32_t st_rdev;
     int32_t st_atime_, st_atime_ns, st_mtime_, st_mtime_ns, st_ctime_, st_ctime_ns;
     int64_t st_size, st_blocks;
+#endif
     int32_t st_blksize;
     uint32_t st_flags, st_gen;
     int32_t st_lspare;
     int64_t st_qspare[2];
 } darwin_stat;
+#if PORT_STAT_INO64
+_Static_assert(__builtin_offsetof(darwin_stat, st_size) == 0x3c && sizeof(darwin_stat) == 108, "stat ino64");
+#endif
 static void to_darwin_stat(const struct stat *s, darwin_stat *d) {
     memset(d, 0, sizeof(*d));
     // S_IFDIR/S_IFREG coinciden (0040000/0100000)

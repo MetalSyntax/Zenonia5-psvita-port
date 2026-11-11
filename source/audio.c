@@ -73,7 +73,48 @@ typedef struct {
     long data_off, data_len, pos_frames;
     int channels, rate;
     int64_t frames;
+    uint8_t *mem; // .ogg entero en RAM (máx. ~700 KB): la música no espera a la tarjeta durante las cargas
+    size_t mem_len, mem_pos;
 } audio_file;
+
+static size_t mem_read(void *dst, size_t sz, size_t n, void *ud) {
+    audio_file *a = ud;
+    size_t left = a->mem_len - a->mem_pos, want = sz * n;
+    if (want > left)
+        want = left;
+    memcpy(dst, a->mem + a->mem_pos, want);
+    a->mem_pos += want;
+    return sz ? want / sz : 0;
+}
+static int mem_seek(void *ud, ogg_int64_t off, int whence) {
+    audio_file *a = ud;
+    ogg_int64_t base = whence == SEEK_CUR ? (ogg_int64_t)a->mem_pos : whence == SEEK_END ? (ogg_int64_t)a->mem_len : 0;
+    if (base + off < 0 || base + off > (ogg_int64_t)a->mem_len)
+        return -1;
+    a->mem_pos = base + off;
+    return 0;
+}
+static long mem_tell(void *ud) { return ((audio_file *)ud)->mem_pos; }
+// ov_open_callbacks desde memoria; 0 = OK (como ov_fopen)
+static int ogg_open_mem(audio_file *a, const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f)
+        return -1;
+    fseek(f, 0, SEEK_END);
+    a->mem_len = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    a->mem = malloc(a->mem_len);
+    size_t got = a->mem ? fread(a->mem, 1, a->mem_len, f) : 0;
+    fclose(f);
+    ov_callbacks cb = {mem_read, mem_seek, NULL, mem_tell};
+    a->mem_pos = 0;
+    if (got != a->mem_len || ov_open_callbacks(a, &a->vf, NULL, 0, cb)) {
+        free(a->mem);
+        a->mem = NULL;
+        return -1;
+    }
+    return 0;
+}
 
 static const char *try_ext(const char *in, const char *ext, char *out, int max) {
     snprintf(out, max, "%s", in);
@@ -131,7 +172,7 @@ static int af_OpenURL(id url, int perms, uint32_t hint, audio_file **out) {
     const char *in = darwin_path(ns_cstr((id)MSG0(url, "path")), inb, sizeof(inb)); // X.app/ -> game_app/
     const char *path = try_ext(in, ".ogg", p, sizeof(p));
     audio_file *a = calloc(1, sizeof(*a));
-    if (path && !ov_fopen(path, &a->vf)) {
+    if (path && !ogg_open_mem(a, path)) {
         vorbis_info *vi = ov_info(&a->vf, -1);
         a->kind = 1;
         a->channels = vi->channels;
@@ -168,8 +209,10 @@ int af_close(void *a);
 static int af_Close(audio_file *a) {
     if (!a)
         return 0;
-    if (a->kind == 1)
+    if (a->kind == 1) {
         ov_clear(&a->vf);
+        free(a->mem);
+    }
     else if (a->f)
         fclose(a->f);
     free(a);

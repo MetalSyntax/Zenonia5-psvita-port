@@ -20,6 +20,7 @@
 #include <vitaGL.h>
 
 #include "cgbi.h"
+#include "darwin.h"
 #include "foundation.h"
 #include "gles.h"
 #include "hle.h"
@@ -84,6 +85,11 @@ static id v_make_layer(id self) {
 }
 static id v_initWithFrame(id self, SEL _c, CGRect f) {
     view_ext *x = VX(self);
+#if PORT_LANDSCAPE_VIEWS
+    // iOS 6: el RootViewController gira a apaisado las vistas de pantalla completa (la UIWindow no).
+    if (f.s.w == PORT_SCREEN_W && f.s.h == PORT_SCREEN_H && !objc_is_kind(self, c_UIWindow))
+        f.s.w = PORT_SCREEN_H, f.s.h = PORT_SCREEN_W;
+#endif
     x->frame = f;
     x->transform = IDENTITY;
     x->alpha = 1;
@@ -286,10 +292,24 @@ static id sc_screens(id cls, SEL _c) {
 static void sc_bounds(CGRect *ret, id self, SEL _c) { *ret = (CGRect){{0, 0}, {PORT_SCREEN_W, PORT_SCREEN_H}}; }
 static void sc_appFrame(CGRect *ret, id self, SEL _c) { *ret = (CGRect){{0, 0}, {PORT_SCREEN_W, PORT_SCREEN_H}}; }
 static float sc_scale(id self, SEL _c) { return PORT_SCREEN_SCALE; }
+// UIScreenMode: tamaño nativo en píxeles, vertical (iOS 6). Los juegos detectan el iPhone 5 con
+// preferredMode.size == 640x1136 (Zenonia 5: 0x425a0); sin esto usan el diseño de 3.5" y recortan arriba/abajo.
+static id screen_mode;
+static void sm_size(CGSize *ret, id self, SEL _c) {
+    *ret = (CGSize){PORT_SCREEN_W * PORT_SCREEN_SCALE, PORT_SCREEN_H * PORT_SCREEN_SCALE};
+}
+static id sc_mode(id self, SEL _c) { return screen_mode; }
+static id sc_modes(id self, SEL _c) {
+    id a = ns_array_new();
+    ns_array_add(a, screen_mode);
+    return AR(a);
+}
+static const nmethod uiscreenmode_i[] = {NM("size", sm_size), NM("pixelAspectRatio", l_one), {0}};
 static const nmethod uiscreen_c[] = {NM("mainScreen", sc_main), NM("screens", sc_screens), {0}};
 static const nmethod uiscreen_i[] = {
     NM("bounds", sc_bounds), NM("applicationFrame", sc_appFrame), NM("scale", sc_scale),
-    NM("nativeBounds", sc_bounds), NM("nativeScale", sc_scale), NM("brightness", l_one), NM("setBrightness:", v_noop), {0}};
+    NM("nativeBounds", sc_bounds), NM("nativeScale", sc_scale), NM("currentMode", sc_mode), NM("preferredMode", sc_mode),
+    NM("availableModes", sc_modes), NM("brightness", l_one), NM("setBrightness:", v_noop), {0}};
 
 static int status_orientation = 3; // UIInterfaceOrientationLandscapeRight
 static id ap_shared(id cls, SEL _c) { return the_app; }
@@ -381,7 +401,7 @@ static id dv_udid(id self, SEL _c) { return ns_str("0123456789abcdef0123456789ab
 static id dv_name(id self, SEL _c) { return ns_str("PS Vita"); }
 // UIDeviceOrientation: 3 = LandscapeLeft (home a la DERECHA = UIInterfaceOrientationLandscapeRight), 4 = home a la
 // izquierda. Rotación 1 muestra home a la derecha (igual que el acelerómetro simulado) -> 3.
-static int dv_orientation(id self, SEL _c) { return gles_rotation() == 1 ? 3 : gles_rotation() == 2 ? 4 : 1; }
+static int dv_orientation(id self, SEL _c) { return gles_rotation() == 2 ? 4 : gles_rotation() == 1 || fb_w > fb_h ? 3 : 1; }
 static float dv_battery(id self, SEL _c) { return 1.0f; }
 static const nmethod uidevice_c[] = {NM("currentDevice", dv_current), {0}};
 static const nmethod uidevice_i[] = {
@@ -480,7 +500,7 @@ static const nmethod uievent_i[] = {
     NM("allTouches", ev_allTouches), NM("touchesForView:", ev_touchesForView), NM("touchesForWindow:", ev_touchesForView),
     NM("timestamp", ev_time), NM("type", ap_zero), {0}};
 
-#define MAX_TOUCH 9 // 2 reales + 6 botones + dedo del STICK (input.c)
+#define MAX_TOUCH 13 // 2 reales + 10 botones + dedo del STICK (input.c)
 static ui_touch *live[MAX_TOUCH]; // por id de dedo (input.c)
 static id touch_event;
 
@@ -570,16 +590,7 @@ static cg_image *img_new(int w, int h, uint8_t *rgba, int premul) {
     return i;
 }
 
-static cg_image *img_load(const char *path) {
-    FILE *f = fopen(path, "rb");
-    if (!f)
-        return NULL;
-    fseek(f, 0, SEEK_END);
-    long n = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    uint8_t *d = malloc(n);
-    fread(d, 1, n, f);
-    fclose(f);
+static cg_image *img_decode(const uint8_t *d, long n, const char *what) {
     cg_image *img = NULL;
     int w, h, bpp;
     if (cgbi_is(d, n)) {
@@ -599,9 +610,23 @@ static cg_image *img_load(const char *path) {
                 free(px);
         }
     }
-    free(d);
     if (!img)
-        l_error("UIImage: no se pudo decodificar %s (¿JPEG?)", path);
+        l_error("UIImage: no se pudo decodificar %s (¿JPEG?)", what);
+    return img;
+}
+
+static cg_image *img_load(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f)
+        return NULL;
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    uint8_t *d = malloc(n);
+    fread(d, 1, n, f);
+    fclose(f);
+    cg_image *img = img_decode(d, n, path);
+    free(d);
     return img;
 }
 
@@ -650,6 +675,23 @@ static id im_initWithContentsOfFile(id self, SEL _c, id path) {
     ((ui_image *)self)->cg = cg;
     return self;
 }
+static id im_imageWithData(id cls, SEL _c, id data) {
+    int n = 0;
+    const uint8_t *d = ns_data_bytes(data, &n);
+    id r = d && n ? uiimage_from(img_decode(d, n, "NSData")) : NULL;
+    return r ? AR(r) : NULL;
+}
+static id im_initWithData(id self, SEL _c, id data) {
+    int n = 0;
+    const uint8_t *d = ns_data_bytes(data, &n);
+    cg_image *cg = d && n ? img_decode(d, n, "NSData") : NULL;
+    if (!cg) {
+        objc_free(self);
+        return NULL;
+    }
+    ((ui_image *)self)->cg = cg;
+    return self;
+}
 static id im_imageWithCGImage(id cls, SEL _c, cg_image *cg) {
     if (cg)
         cg->refs++;
@@ -666,9 +708,9 @@ static void im_dealloc(ui_image *self, SEL _c) {
 }
 static const nmethod uiimage_c[] = {
     NM("imageNamed:", im_imageNamed), NM("imageWithContentsOfFile:", im_withContentsOfFile),
-    NM("imageWithCGImage:", im_imageWithCGImage), {0}};
+    NM("imageWithCGImage:", im_imageWithCGImage), NM("imageWithData:", im_imageWithData), {0}};
 static const nmethod uiimage_i[] = {
-    NM("initWithContentsOfFile:", im_initWithContentsOfFile), NM("CGImage", im_CGImage), NM("size", im_size),
+    NM("initWithContentsOfFile:", im_initWithContentsOfFile), NM("initWithData:", im_initWithData), NM("CGImage", im_CGImage), NM("size", im_size),
     NM("scale", l_one), NM("dealloc", im_dealloc), NM("drawInRect:", v_noop), NM("drawAtPoint:", v_noop),
     NM("imageOrientation", ap_zero), {0}};
 
@@ -767,6 +809,36 @@ static void cg_DrawImage(cg_ctx *c, CGRect r, cg_image *img) {
     if (det == 0)
         return;
     int bpp = c->gray ? 1 : 4;
+    // Vía rápida (CCTexture2D de cocos2d: traslación pura, imagen a tamaño 1:1): mismo resultado que el
+    // muestreo de abajo sin la inversa en coma flotante por píxel (2 s -> ~0.1 s en un PNG de 1024x2048).
+    float fx = m.tx + r.o.x, fy = m.ty + r.o.y;
+    if (m.a == 1 && m.d == 1 && m.b == 0 && m.c == 0 && r.s.w == img->w && r.s.h == img->h && fx == (int)fx &&
+        fy == (int)fy) {
+        int x0 = (int)fx, row0 = c->h - (int)fy - img->h; // fila de memoria de la fila 0 (arriba) de la imagen
+        int mode = c->info & 0x1F, little = (c->info & 0x7000) == 0x2000;
+        int cx0 = x0 < 0 ? 0 : x0, cx1 = x0 + img->w > c->w ? c->w : x0 + img->w;
+        for (int iy = 0; iy < img->h && cx0 < cx1; iy++) {
+            int row = row0 + iy;
+            if (row < 0 || row >= c->h)
+                continue;
+            uint8_t *dst = c->data + row * c->bpr + cx0 * bpp;
+            const uint8_t *src = img->rgba + (iy * img->w + (cx0 - x0)) * 4;
+            int n = cx1 - cx0;
+            if (!c->gray && !little && ((mode == 1 && img->premul) || (mode == 3 && !img->premul))) {
+                memcpy(dst, src, n * 4); // RGBA -> RGBA con el mismo alfa
+            } else if (!c->gray && !little && mode == 1) { // RGBA sin premultiplicar -> premultipliedLast
+                for (int i = 0; i < n; i++, src += 4, dst += 4) {
+                    unsigned a = src[3];
+                    dst[0] = (src[0] * a + 127) / 255, dst[1] = (src[1] * a + 127) / 255;
+                    dst[2] = (src[2] * a + 127) / 255, dst[3] = a;
+                }
+            } else {
+                for (int i = 0; i < n; i++, src += 4, dst += bpp)
+                    put_px(c, dst, src, img->premul);
+            }
+        }
+        return;
+    }
     for (int row = 0; row < c->h; row++) {
         float dy = c->h - 1 - row + 0.5f;
         uint8_t *dst = c->data + row * c->bpr;
@@ -1442,6 +1514,7 @@ static void load_nib(void) {
 // ================================================================ run loop
 
 static int tick_depth;
+uint64_t ui_idle_us;
 void ui_runloop_tick(double max_wait) {
     tick_depth++;
     input_poll(); // -> ui_touch_event / botones
@@ -1470,8 +1543,10 @@ void ui_runloop_tick(double max_wait) {
     double wait = tick_depth == 1 ? ns_run_timers() : 0; // timers no reentrantes
     if (wait > max_wait)
         wait = max_wait;
-    if (wait > 0.0005)
+    if (wait > 0.0005) {
         sceKernelDelayThread((SceUInt)(wait * 1e6));
+        ui_idle_us += (uint64_t)(wait * 1e6); // PERF: tiempo ocioso esperando el próximo timer
+    }
     tick_depth--;
 }
 
@@ -1480,13 +1555,14 @@ void ui_runloop_tick(double max_wait) {
 // inicial, sin dump). 8 s sin presentar tras el primer frame -> crash deliberado en ESTE hilo; el .psp2dmp trae
 // PC/LR de todos los hilos (buscar el hilo principal). Quitar cuando no haga falta.
 static int wd_thread(SceSize args, void *argp) {
-    unsigned last = 0;
+    unsigned last = 0, last_io = 0;
     uint64_t since = sceKernelGetProcessTimeWide();
     for (;;) {
         sceKernelDelayThread(500000);
         uint64_t now = sceKernelGetProcessTimeWide();
-        if (frames != last || !frames) {
-            last = frames, since = now;
+        // Abrir archivos también es progreso: el menú carga PNG de 1024x2048 (~2 s cada uno) sin presentar.
+        if (frames != last || !frames || darwin_io_ops != last_io) {
+            last = frames, last_io = darwin_io_ops, since = now;
         } else if (now - since > 8 * 1000000ULL) {
             l_error("[WATCHDOG] 8 s sin presentRenderbuffer (frames=%u%s): crash deliberado para el dump", (unsigned)frames,
                     in_present ? ", dentro de present" : "");
@@ -1664,6 +1740,7 @@ void uikit_init(void) {
 
     the_app = objc_alloc(c_UIApplication);
     main_screen = objc_alloc(c_UIScreen);
+    screen_mode = objc_alloc(objc_define("UIScreenMode", "NSObject", 4, uiscreenmode_i, NULL));
     cur_device = objc_alloc(c_UIDevice);
     accel_obj = objc_alloc(c_UIAccelerometer);
     touch_event = objc_alloc(c_UIEvent);

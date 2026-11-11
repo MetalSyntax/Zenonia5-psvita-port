@@ -2,6 +2,7 @@
 // de introspección del runtime ObjC, sqlite (SceSqlite), ExtAudioFile y stubs de lo que no tiene
 // sentido en la Vita (reportero de crashes con puertos Mach, Keychain, SSL).
 #include <dirent.h>
+#include <psp2/audioout.h>
 #include <psp2/kernel/processmgr.h>
 #include <psp2/kernel/threadmgr.h>
 #include <psp2/sysmodule.h>
@@ -559,6 +560,110 @@ static int ext_Read(ext_file *e, uint32_t *frames, buffer_list *bl) {
     return 0;
 }
 
+// ================================================================ AVAudioPlayer (música; .mp3 -> .ogg de stage_data.sh)
+// Un hilo por reproductor. ponytail: sin audioPlayerDidFinishPlaying: al delegado ni
+// meters/pan/rate; agregarlos si el juego los necesita.
+#define AVP_GRAIN 1024
+typedef struct {
+    objc_class *isa;
+    void *af;
+    asbd fmt;
+    int64_t frames, pos;
+    volatile int playing, quit, loops;
+    volatile float vol;
+    SceUID thread;
+    id delegate;
+} av_player;
+
+// Puerto VOICE (hay uno solo BGM y el juego crea un AVAudioPlayer por tema sin soltar el anterior),
+// abierto solo mientras el reproductor suena.
+static int avp_thread(SceSize args, void *argp) {
+    av_player *p = *(av_player **)argp;
+    int ch = p->fmt.mChannelsPerFrame, port = -1;
+    int16_t *in = malloc(AVP_GRAIN * ch * 2), out[AVP_GRAIN * 2];
+    while (!p->quit) {
+        if (!p->playing) {
+            if (port >= 0)
+                sceAudioOutReleasePort(port), port = -1;
+            sceKernelDelayThread(10 * 1000);
+            continue;
+        }
+        if (port < 0) {
+            port = sceAudioOutOpenPort(SCE_AUDIO_OUT_PORT_TYPE_VOICE, AVP_GRAIN, (int)p->fmt.mSampleRate,
+                                       SCE_AUDIO_OUT_MODE_STEREO);
+            if (port < 0) {
+                l_error("AVAudioPlayer: sceAudioOutOpenPort(%.0f Hz) = 0x%08X", p->fmt.mSampleRate, port);
+                p->playing = 0;
+                continue;
+            }
+        }
+        long got = af_read_frames(p->af, p->pos, AVP_GRAIN, in);
+        p->pos += got;
+        int v = (int)(p->vol * 32768);
+        for (long i = 0; i < AVP_GRAIN; i++) {
+            int l = i < got ? in[i * ch] : 0, r = i < got ? in[i * ch + (ch > 1)] : 0;
+            out[i * 2] = l * v >> 15, out[i * 2 + 1] = r * v >> 15;
+        }
+        sceAudioOutOutput(port, out);
+        if (got < AVP_GRAIN) { // fin del tema
+            p->pos = 0;
+            if (p->loops > 0)
+                p->loops--;
+            else if (p->loops == 0)
+                p->playing = 0;
+        }
+    }
+    if (port >= 0)
+        sceAudioOutReleasePort(port);
+    free(in);
+    return 0;
+}
+static id avp_initWithURL(av_player *self, SEL _c, id url, id *err) {
+    const char *path = ns_cstr((id)MSG0(url, "path"));
+    if (err)
+        *err = NULL;
+    if (af_open_path(path, &self->af)) {
+        l_error("AVAudioPlayer: no se pudo abrir %s", path);
+        objc_free((id)self);
+        return NULL;
+    }
+    af_format(self->af, &self->fmt, &self->frames);
+    self->vol = 1.0f;
+    // prioridad alta y núcleo 1: que la música no se trabe mientras el hilo principal decodifica PNG
+    self->thread = sceKernelCreateThread("avplayer", avp_thread, 64, 0x10000, 0, 0x20000, NULL);
+    sceKernelStartThread(self->thread, sizeof(self), &self);
+    l_info("AVAudioPlayer %s (%.0f Hz, %u ch)", path, self->fmt.mSampleRate, (unsigned)self->fmt.mChannelsPerFrame);
+    return (id)self;
+}
+static int avp_play(av_player *self, SEL _c) { return self->playing = 1; }
+static void avp_pause(av_player *self, SEL _c) { self->playing = 0; }
+static void avp_stop(av_player *self, SEL _c) { self->playing = 0; }
+static int avp_isPlaying(av_player *self, SEL _c) { return self->playing; }
+static int avp_yes(av_player *self, SEL _c) { return 1; }
+static void avp_setVolume(av_player *self, SEL _c, float v) { self->vol = v < 0 ? 0 : v > 1 ? 1 : v; }
+static float avp_volume(av_player *self, SEL _c) { return self->vol; }
+static void avp_setLoops(av_player *self, SEL _c, int n) { self->loops = n; }
+static int avp_loops(av_player *self, SEL _c) { return self->loops; }
+static void avp_setDelegate(av_player *self, SEL _c, id d) { self->delegate = d; }
+static id avp_delegate(av_player *self, SEL _c) { return self->delegate; }
+static double avp_duration(av_player *self, SEL _c) { return self->frames / self->fmt.mSampleRate; }
+static double avp_currentTime(av_player *self, SEL _c) { return self->pos / self->fmt.mSampleRate; }
+static void avp_setCurrentTime(av_player *self, SEL _c, double t) { self->pos = (int64_t)(t * self->fmt.mSampleRate); }
+static void avp_dealloc(av_player *self, SEL _c) {
+    self->quit = 1;
+    sceKernelWaitThreadEnd(self->thread, NULL, NULL);
+    sceKernelDeleteThread(self->thread);
+    af_close(self->af);
+    objc_free((id)self);
+}
+static const nmethod avplayer_i[] = {
+    NM("initWithContentsOfURL:error:", avp_initWithURL), NM("play", avp_play), NM("pause", avp_pause),
+    NM("stop", avp_stop), NM("isPlaying", avp_isPlaying), NM("playing", avp_isPlaying), NM("prepareToPlay", avp_yes),
+    NM("setVolume:", avp_setVolume), NM("volume", avp_volume), NM("setNumberOfLoops:", avp_setLoops),
+    NM("numberOfLoops", avp_loops), NM("setDelegate:", avp_setDelegate), NM("delegate", avp_delegate),
+    NM("duration", avp_duration), NM("currentTime", avp_currentTime), NM("setCurrentTime:", avp_setCurrentTime),
+    NM("dealloc", avp_dealloc), {0}};
+
 // ================================================================ tabla / init
 
 static uint32_t k_vm_page_size = 4096, k_NDR_record[2], k_mach_task_self_;
@@ -648,6 +753,7 @@ void ios5_init(void) {
     c_stack_block = objc_define("__NSStackBlock__", "NSObject", 4, block_i, NULL);
     c_malloc_block = objc_define("__NSMallocBlock__", "NSObject", 4, block_i, NULL);
     c_global_block = objc_define("__NSGlobalBlock__", "NSObject", 4, block_i, NULL);
+    objc_define("AVAudioPlayer", "NSObject", sizeof(av_player), avplayer_i, NULL);
     sceSysmoduleLoadModule(SCE_SYSMODULE_SQLITE);
 }
 

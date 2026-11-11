@@ -88,6 +88,13 @@ id ns_string_new(const char *utf8) {
 }
 id ns_str(const char *utf8) { return AR(ns_string_new(utf8)); }
 
+const void *ns_data_bytes(id o, int *len) {
+    if (!o || !objc_is_kind(o, c_NSData))
+        return NULL;
+    *len = ((ns_data *)o)->len;
+    return ((ns_data *)o)->bytes;
+}
+
 const char *ns_cstr(id o) {
     if (!o)
         return "";
@@ -411,6 +418,35 @@ static id s_stringByDeletingPathExtension(id self, SEL _c) {
     return p && (!sl || p > sl) ? sub_bytes(s, p - s) : AR(ns_string_new(s));
 }
 static id s_self_copy(id self, SEL _c) { return AR(ns_string_new(ns_cstr(self))); }
+// "/a//b/" -> ("/", "a", "b"). ponytail: Foundation agrega un "/" final si la ruta termina en barra; acá se omite.
+static id s_pathComponents(id self, SEL _c) {
+    const char *p = ns_cstr(self);
+    id a = ns_array_new();
+    if (*p == '/')
+        ns_array_add(a, ns_str("/"));
+    while (*p) {
+        p += strspn(p, "/");
+        size_t n = strcspn(p, "/");
+        if (n)
+            ns_array_add(a, sub_bytes(p, n));
+        p += n;
+    }
+    return AR(a);
+}
+static id s_pathWithComponents(id cls, SEL _c, id comps) {
+    char tmp[1024] = "";
+    for (int i = 0, n = ns_array_count(comps); i < n; i++) {
+        const char *c = ns_cstr(ns_array_get(comps, i));
+        size_t l = strlen(tmp);
+        if (!strcmp(c, "/")) {
+            if (!l)
+                strcpy(tmp, "/");
+            continue;
+        }
+        snprintf(tmp + l, sizeof(tmp) - l, "%s%s", l && tmp[l - 1] != '/' ? "/" : "", c);
+    }
+    return AR(ns_string_new(tmp));
+}
 static id s_substringFromIndex(id self, SEL _c, int i) { return AR(ns_string_new(utf8_at(ns_cstr(self), i))); }
 static id s_substringToIndex(id self, SEL _c, int i) {
     const char *s = ns_cstr(self);
@@ -589,7 +625,7 @@ static const nmethod nsstring_c[] = {
     NM("stringWithString:", s_stringWithString), NM("stringWithFormat:", s_stringWithFormat),
     NM("localizedStringWithFormat:", s_stringWithFormat), NM("stringWithCharacters:length:", s_stringWithCharacters),
     NM("stringWithContentsOfFile:encoding:error:", s_stringWithContentsOfFile),
-    NM("stringWithContentsOfFile:", s_stringWithContentsOfFile), {0}};
+    NM("stringWithContentsOfFile:", s_stringWithContentsOfFile), NM("pathWithComponents:", s_pathWithComponents), {0}};
 static const nmethod nsstring_i[] = {
     NM("initWithUTF8String:", s_initWithUTF8String), NM("initWithCString:encoding:", s_initWithCString_enc),
     NM("initWithCString:", s_initWithUTF8String), NM("initWithString:", s_initWithString),
@@ -608,7 +644,7 @@ static const nmethod nsstring_i[] = {
     NM("stringByAppendingString:", s_stringByAppendingString), NM("stringByAppendingFormat:", s_stringByAppendingFormat),
     NM("stringByAppendingPathComponent:", s_stringByAppendingPathComponent),
     NM("stringByAppendingPathExtension:", s_stringByAppendingPathExtension),
-    NM("lastPathComponent", s_lastPathComponent), NM("stringByDeletingLastPathComponent", s_stringByDeletingLastPathComponent),
+    NM("lastPathComponent", s_lastPathComponent), NM("pathComponents", s_pathComponents), NM("stringByDeletingLastPathComponent", s_stringByDeletingLastPathComponent),
     NM("pathExtension", s_pathExtension), NM("stringByDeletingPathExtension", s_stringByDeletingPathExtension),
     NM("stringByStandardizingPath", s_self_copy), NM("stringByExpandingTildeInPath", s_self_copy),
     NM("stringByResolvingSymlinksInPath", s_self_copy),
@@ -1380,6 +1416,99 @@ static id bp_obj(bplist *b, uint64_t ref, int depth) {
     return NULL;
 }
 
+// plist XML (partículas de cocos2d: ptc/NNN.plist): dict, array, key, string, integer, real, true, false.
+// ponytail: <data> y <date> se devuelven como nil; agregarlos si algún plist del juego los usa.
+static const char *xp_skip(const char *p) {
+    for (;;) {
+        while (*p && *p != '<')
+            p++;
+        if (!strncmp(p, "<?", 2) || !strncmp(p, "<!", 2) || !strncmp(p, "<plist", 6) || !strncmp(p, "</plist", 7)) {
+            p = strchr(p, '>');
+            if (!p)
+                return "";
+            p++;
+            continue;
+        }
+        return p;
+    }
+}
+static char *xp_text(const char *p, const char *end) { // texto hasta '<' con &amp; &lt; &gt; &quot; &apos;
+    char *o = malloc(end - p + 1), *q = o;
+    while (p < end) {
+        static const struct {
+            const char *e;
+            char c;
+        } ent[] = {{"&amp;", '&'}, {"&lt;", '<'}, {"&gt;", '>'}, {"&quot;", '"'}, {"&apos;", '\''}};
+        unsigned k = 0;
+        if (*p == '&')
+            for (; k < 5 && strncmp(p, ent[k].e, strlen(ent[k].e)); k++)
+                ;
+        if (*p == '&' && k < 5)
+            *q++ = ent[k].c, p += strlen(ent[k].e);
+        else
+            *q++ = *p++;
+    }
+    *q = 0;
+    return o;
+}
+static id xp_obj(const char **pp, int depth) {
+    const char *p = xp_skip(*pp);
+    id r = NULL;
+    char tag[16] = "";
+    int n = 0;
+    if (*p != '<' || depth > 64)
+        return *pp = p, NULL;
+    for (p++; *p && *p != '>' && *p != '/' && *p != ' ' && n < 15; p++)
+        tag[n++] = *p;
+    tag[n] = 0;
+    int empty = 0;
+    while (*p && *p != '>')
+        empty = *p++ == '/';
+    if (*p)
+        p++;
+    if (!strcmp(tag, "true") || !strcmp(tag, "false")) {
+        r = num_new(2, tag[0] == 't', 0);
+    } else if (!strcmp(tag, "dict") || !strcmp(tag, "array")) {
+        int dict = tag[0] == 'd';
+        r = objc_alloc(dict ? c_NSMutableDictionary : c_NSMutableArray);
+        while (!empty) {
+            p = xp_skip(p);
+            if (!*p || p[1] == '/') { // </dict> o </array>
+                p = *p ? strchr(p, '>') + 1 : p;
+                break;
+            }
+            id k = dict ? xp_obj(&p, depth + 1) : NULL, v = xp_obj(&p, depth + 1);
+            if (dict && k && v)
+                ns_dict_set(r, k, v);
+            else if (!dict && v)
+                ns_array_add(r, v);
+            objc_release(k);
+            objc_release(v);
+            if (!*p)
+                break;
+        }
+    } else {
+        const char *end = empty ? p : strchr(p, '<');
+        if (!end)
+            end = p + strlen(p);
+        char *t = xp_text(p, end);
+        if (!strcmp(tag, "key") || !strcmp(tag, "string"))
+            r = ns_string_new(t);
+        else if (!strcmp(tag, "integer"))
+            r = num_new(0, strtoll(t, NULL, 10), 0);
+        else if (!strcmp(tag, "real"))
+            r = num_new(1, 0, strtod(t, NULL));
+        free(t);
+        p = end;
+        if (!empty && *p) {
+            const char *gt = strchr(p, '>'); // cierre </tag>
+            p = gt ? gt + 1 : p + strlen(p);
+        }
+    }
+    *pp = p;
+    return r;
+}
+
 id plist_load(const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f)
@@ -1399,7 +1528,12 @@ id plist_load(const char *path) {
         if (toff < (uint64_t)n && top < nobj)
             r = bp_obj(&b, top, 0);
     } else {
-        l_error("plist no binario (sin soporte XML): %s", path);
+        d = realloc(d, n + 1);
+        d[n] = 0;
+        const char *p = (const char *)d;
+        r = xp_obj(&p, 0);
+        if (!r)
+            l_error("plist: no se pudo leer %s", path);
     }
     free(d);
     return r;
@@ -2201,10 +2335,14 @@ static const nmethod nserror_i[] = {NM("localizedDescription", err_desc), NM("co
 static void ah_fail(id self, SEL _c, SEL m, id obj, id file, int line, id desc, ...) {
     l_error("NSAssert falló: %s (%s:%d) %s", m, ns_cstr(file), line, ns_cstr(desc));
 }
+// InFunction no lleva object: y el nombre de función es NSString, no SEL.
+static void ah_fail_fn(id self, SEL _c, id fn, id file, int line, id desc, ...) {
+    l_error("NSCAssert falló: %s (%s:%d) %s", ns_cstr(fn), ns_cstr(file), line, ns_cstr(desc));
+}
 static id ah_current(id cls, SEL _c) { return cls; }
 static const nmethod nsassert_c[] = {
     NM("currentHandler", ah_current), NM("handleFailureInMethod:object:file:lineNumber:description:", ah_fail),
-    NM("handleFailureInFunction:file:lineNumber:description:", ah_fail), {0}};
+    NM("handleFailureInFunction:file:lineNumber:description:", ah_fail_fn), {0}};
 static id pi_info(id cls, SEL _c) { return cls; }
 static id pi_name(id self, SEL _c) { return ns_str("game"); }
 static double pi_uptime(id self, SEL _c) { return mono(); }

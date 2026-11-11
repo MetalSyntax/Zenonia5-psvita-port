@@ -13,3 +13,11 @@
 #define PORT_SCREEN_W 320
 #define PORT_SCREEN_H 568
 #define PORT_SCREEN_SCALE 2.0f
+#define PORT_STAT_INO64 1      // _stat con layout ino64 (st_size en +0x3c, visto en 0x5e34a)
+#define PORT_LANDSCAPE_VIEWS 1 // EAGLView 568x320 como tras la rotación del RootViewController de iOS 6
+// Controles táctiles del juego ocultos (L+R los muestra/oculta): sprites del atlas com/Keypad.png que caen
+// fuera de estas franjas visibles no se dibujan. Rects en píxeles del FBO 568x320, origen abajo-izquierda:
+// arriba todo el ancho (vida, SKIP, tienda, pausa, minimapa) y abajo el centro; quedan fuera el joystick
+// (abajo-izq) y el ataque + habilidades (abajo-der).
+#define PORT_HUD_TEX "/com/Keypad.png"
+#define PORT_HUD_KEEP {{0, 140, 568, 180}, {150, 0, 265, 140}}

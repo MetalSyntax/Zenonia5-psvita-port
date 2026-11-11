@@ -109,6 +109,7 @@ int main(void) {
     macho_finalize(); // __TEXT recién ahora está en memoria: las cadenas ObjC viven ahí
     foundation_fix_cfstrings();
     objc_init_image();
+    patch_objc();
     macho_run_inits();
 
     uintptr_t gmain = macho_sym("_main");

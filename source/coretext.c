@@ -134,10 +134,11 @@ static void layout(CGSize *ret, const char *text, float px, float maxw, float ma
         else if (end < n && cp[end] == '\n')
             next = end + 1;
         w = 0;
+        // Los espacios finales cuentan, como en sizeWithFont: de UIKit: el texto con borde de cocos2d mide
+        // carácter por carácter y un " " de ancho 0 dejaba las palabras pegadas. Al cortar una línea
+        // ajustada el espacio del corte ya quedó afuera (end = brk).
         for (int k = start; k < end; k++)
             w += adv[k];
-        for (int k = end - 1; k >= start && cp[k] == ' '; k--)
-            w -= adv[k];
         if (maxh > 0 && lines > 0 && (lines + 1) * lh > maxh + 0.5f)
             break; // UIKit no dibuja líneas que no entran
         if (w > maxlw)
@@ -389,7 +390,7 @@ static void add_methods(objc_class *c, const nmethod *add) {
 }
 
 void coretext_init(void) {
-    if (FT_Init_FreeType(&ft) || (FT_New_Face(ft, "app0:font.ttf", 0, &face) && FT_New_Face(ft, DATA_PATH "font.ttf", 0, &face)))
+    if (FT_Init_FreeType(&ft) || (FT_New_Face(ft, DATA_PATH "font.ttf", 0, &face) && FT_New_Face(ft, "app0:font.ttf", 0, &face)))
         fatal_error("No se pudo abrir font.ttf (app0: ni " DATA_PATH ")");
     FT_Stroker_New(ft, &stroker);
     l_info("coretext: font.ttf %s, %ld glifos, %d unidades/em", face->family_name, face->num_glyphs, face->units_per_EM);

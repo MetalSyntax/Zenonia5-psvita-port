@@ -38,7 +38,7 @@ static const struct {
     {"START", SCE_CTRL_START},       {"SELECT", SCE_CTRL_SELECT}, {"UP", SCE_CTRL_UP},
     {"DOWN", SCE_CTRL_DOWN},         {"LEFT", SCE_CTRL_LEFT},     {"RIGHT", SCE_CTRL_RIGHT},
 };
-#define MAX_BIND 6
+#define MAX_BIND 10
 static struct {
     uint32_t mask;
     float x, y; // lógicas (lo que se ve)
@@ -160,7 +160,16 @@ void input_poll(void) {
         stick_x = 0;
     if (stick_y > -0.12f && stick_y < 0.12f)
         stick_y = 0;
-    uint32_t b = pad.buttons, changed = b ^ prev_buttons;
+    // L+R juntos: muestra/oculta los controles táctiles (gles.c). Mientras están juntos, L y R no tocan nada.
+    extern int gles_hud_hidden;
+    const uint32_t LR = SCE_CTRL_LTRIGGER | SCE_CTRL_RTRIGGER;
+    static int lr_held;
+    if ((pad.buttons & LR) == LR && !lr_held) {
+        gles_hud_hidden ^= 1;
+        l_info("controles táctiles %s (L+R)", gles_hud_hidden ? "ocultos" : "visibles");
+    }
+    lr_held = (pad.buttons & LR) == LR || (lr_held && (pad.buttons & LR)); // hasta soltar los dos
+    uint32_t b = lr_held ? pad.buttons & ~LR : pad.buttons, changed = b ^ prev_buttons;
     for (int i = 0; i < nbinds; i++) {
         if (!(changed & binds[i].mask))
             continue;

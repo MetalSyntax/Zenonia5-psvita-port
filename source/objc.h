@@ -79,6 +79,7 @@ void objc_pool_push(void);
 void objc_pool_pop(void);
 int objc_ivar_set(id o, const char *name, id value); // KVC mínimo (outlets del nib)
 int objc_responds(id o, SEL s);
+int objc_override(const char *cls, int meta, const char *sel, void *imp); // method_setImplementation
 
 // ---- mensajes desde nuestro C (preservan r9; hasta 4 argumentos extra de 32 bits)
 uint32_t objc_msg(id self, SEL sel, uint32_t a, uint32_t b, uint32_t c, uint32_t d);

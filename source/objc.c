@@ -275,6 +275,34 @@ static void *find_in(objc_class *c, SEL sel) {
     return NULL;
 }
 
+// Reemplaza la implementación de un método de una clase del Mach-O (como method_setImplementation):
+// sobrescribe el imp en su method_list (base o de categoría). meta = método de clase. 1 si lo encontró.
+int objc_override(const char *cls_name, int meta, const char *sel, void *imp) {
+    objc_class *c = objc_getClass(cls_name);
+    if (c && meta)
+        c = c->isa;
+    if (!c || is_native(c))
+        return 0;
+    int n = 0;
+    for (ext_list *e = ext_lists; e; e = e->next)
+        if (e->cls == c)
+            for (uint32_t i = 0, ent = e->ml->entsize & ~3u; i < e->ml->count; i++) {
+                SEL *m = (SEL *)((uint8_t *)e->ml->m + i * ent);
+                if (!strcmp(*m, sel))
+                    m[2] = imp, n++;
+            }
+    method_list *ml = ro_of(c)->baseMethods;
+    for (uint32_t i = 0, ent = ml ? ml->entsize & ~3u : 0; ml && i < ml->count; i++) {
+        SEL *m = (SEL *)((uint8_t *)ml->m + i * ent);
+        if (!strcmp(*m, sel))
+            m[2] = imp, n++;
+    }
+    pthread_mutex_lock(&rt_lock);
+    memset(cache, 0, sizeof(cache));
+    pthread_mutex_unlock(&rt_lock);
+    return n > 0;
+}
+
 static uint32_t nil_imp(id self, SEL sel) {
     // init* sin implementar: devolver self para que [[X alloc] init] no sea nil.
     return !strncmp(sel, "init", 4) ? (uint32_t)self : 0;
