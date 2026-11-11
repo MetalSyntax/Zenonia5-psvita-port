@@ -59,6 +59,7 @@ add_executable(${CMAKE_PROJECT_NAME}
   source/objc.c
   source/foundation.c
   source/uikit.c
+  source/coretext.c
   source/gles.c
   source/vitagl_no_splash.c
   source/openal.c
@@ -113,6 +114,7 @@ vita_create_self(eboot.bin ${CMAKE_PROJECT_NAME} UNSAFE NOASLR)
 vita_create_vpk(${VITA_VPKNAME}.vpk ${VITA_TITLEID} eboot.bin
   VERSION ${VITA_VERSION}
   NAME "${VITA_APP_NAME}"
+  FILE ${CMAKE_SOURCE_DIR}/font.ttf font.ttf
   FILE ${CMAKE_SOURCE_DIR}/extras/livearea/icon0.png sce_sys/icon0.png
   FILE ${CMAKE_SOURCE_DIR}/extras/livearea/pic0.png sce_sys/pic0.png
   FILE ${CMAKE_SOURCE_DIR}/extras/livearea/bg0.png sce_sys/livearea/contents/bg0.png

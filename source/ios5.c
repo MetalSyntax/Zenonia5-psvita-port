@@ -12,7 +12,10 @@
 #include <time.h>
 #include <unistd.h>
 #include <wchar.h>
+#include <zlib.h>
 
+#include "darwin.h"
+#include "darwin_printf.h"
 #include "foundation.h"
 #include "hle.h"
 #include "imports.h"
@@ -368,6 +371,68 @@ static void d_memset_pattern16(void *b, const void *pat, size_t len) {
     for (size_t i = 0; i < len; i++)
         ((uint8_t *)b)[i] = ((const uint8_t *)pat)[i & 15];
 }
+// ---- Zenonia 5: libc/zlib/GL/objc que faltaban
+static void d_memset_pattern8(void *b, const void *pat, size_t len) {
+    for (size_t i = 0; i < len; i++)
+        ((uint8_t *)b)[i] = ((const uint8_t *)pat)[i & 7];
+}
+static void d_bcopy(const void *s, void *d, size_t n) { memmove(d, s, n); }
+static void *d_reallocf(void *p, size_t n) {
+    void *r = realloc(p, n);
+    if (!r && n)
+        free(p);
+    return r;
+}
+static int d___vsnprintf_chk(char *buf, size_t n, int flag, size_t len, const char *fmt, const uint32_t *ap) {
+    words w = {NULL, ap};
+    return darwin_vformat(buf, n, fmt, &w);
+}
+static int d_asprintf(char **ret, const char *fmt, ...) {
+    va_list ap, ap2;
+    va_start(ap, fmt);
+    va_copy(ap2, ap);
+    words w = {&ap, NULL};
+    int n = darwin_vformat(NULL, 0, fmt, &w);
+    *ret = malloc(n + 1);
+    words w2 = {&ap2, NULL};
+    darwin_vformat(*ret, n + 1, fmt, &w2);
+    va_end(ap2);
+    va_end(ap);
+    return n;
+}
+static gzFile d_gzopen(const char *path, const char *mode) {
+    char b[512];
+    return gzopen(darwin_path(path, b, sizeof(b)), mode);
+}
+static void d_rbStorageMS(uint32_t t, int samples, uint32_t fmt, int w, int h) { // MSAA -> sin MSAA
+    ((void (*)(uint32_t, uint32_t, int, int))imports_lookup("_glRenderbufferStorageOES")->addr)(t, fmt, w, h);
+}
+static objc_class *r_object_setClass(id o, objc_class *c) {
+    objc_class *old = object_getClass(o);
+    if (o)
+        *(objc_class **)o = c;
+    return old;
+}
+static objc_class *r_objc_getMetaClass(const char *n) {
+    objc_class *c = objc_getClass(n);
+    return c ? c->isa : NULL;
+}
+static objc_class *r_objc_getRequiredClass(const char *n) {
+    objc_class *c = objc_getClass(n);
+    if (!c)
+        l_error("objc_getRequiredClass(%s): no existe", n);
+    return c;
+}
+static int r_class_isMetaClass(objc_class *c) {
+    return c && (((class_ro *)((uintptr_t)c->ro & ~3u))->flags & RO_META);
+}
+static void *r_class_getClassMethod(objc_class *c, SEL s) { return c ? r_class_getInstanceMethod(c->isa, s) : NULL; }
+static void r_setProperty_nonatomic(id self, SEL _c, id v, ptrdiff_t off) {
+    id *slot = (id *)((uint8_t *)self + off), old = *slot;
+    *slot = objc_retain(v);
+    objc_release(old);
+}
+
 static int d_NSGetExecutablePath(char *buf, uint32_t *size) {
     snprintf(buf, *size, BUNDLE_PATH PORT_EXEC);
     return 0;
@@ -525,6 +590,14 @@ const import_entry ios5_imports[] = {
     F(OSAtomicCompareAndSwapPtrBarrier, os_casptr), F(OSAtomicCompareAndSwapIntBarrier, os_cas32),
     F(OSMemoryBarrier, os_barrier), F(OSSpinLockLock, os_spin_lock), F(OSSpinLockUnlock, os_spin_unlock),
     F(arc4random, d_arc4random), F(basename, d_basename), F(sleep, d_sleep), F(strerror_r, d_strerror_r),
+    F(memset_pattern8, d_memset_pattern8), F(bcopy, d_bcopy), F(reallocf, d_reallocf),
+    F(__vsnprintf_chk, d___vsnprintf_chk), F(asprintf, d_asprintf), F(backtrace, r_zero), F(backtrace_symbols, r_null),
+    F(gzopen, d_gzopen), D(gzread), D(gzclose), D(crc32), D(uncompress), D(inflateInit2_),
+    F(glDiscardFramebufferEXT, d_noop), F(glRenderbufferStorageMultisampleAPPLE, d_rbStorageMS),
+    F(glResolveMultisampleFramebufferAPPLE, d_noop), F(object_setClass, r_object_setClass),
+    F(objc_getMetaClass, r_objc_getMetaClass), F(objc_getRequiredClass, r_objc_getRequiredClass),
+    F(class_isMetaClass, r_class_isMetaClass), F(class_getClassMethod, r_class_getClassMethod),
+    F(objc_setProperty_nonatomic, r_setProperty_nonatomic),
     F(getprogname, d_getprogname), F(memset_pattern16, d_memset_pattern16), F(_NSGetExecutablePath, d_NSGetExecutablePath),
     F(CACurrentMediaTime, d_CACurrentMediaTime), F(CC_SHA1, d_CC_SHA1), F(CC_MD4, d_CC_SHA1), F(CC_MD5_Init, r_one),
     F(CC_MD5_Update, r_one), F(CC_MD5_Final, r_one), F(CCHmac, d_noop), F(CCCrypt, d_CCCrypt), D(gmtime_r), D(mkstemp),

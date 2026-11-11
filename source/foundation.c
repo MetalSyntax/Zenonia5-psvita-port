@@ -2288,11 +2288,11 @@ static int cf_preferencesSync(id app) { return ud_synchronize(NULL, NULL); }
 static int cf_equal(id a, id b) { return obj_equal(a, b); }
 static id cf_copyDescription(id o) { return objc_retain(ns_str(objc_describe(o))); }
 static int cf_numberGetValue(ns_number *n, int type, void *out) {
-    if (type == 12 || type == 6) // float64 / double
+    if (type == 13 || type == 6) // Float64 / Double
         *(double *)out = num_d(n);
-    else if (type == 5 || type == 11)
+    else if (type == 5 || type == 12) // Float32 / Float
         *(float *)out = num_d(n);
-    else if (type == 4 || type == 10)
+    else if (type == 4 || type == 11) // SInt64 / LongLong
         *(int64_t *)out = num_i(n);
     else
         *(int32_t *)out = (int32_t)num_i(n);
@@ -2329,6 +2329,111 @@ static id cf_runLoopCopyAllModes(id rl) {
     ns_array_add(a, ns_str("kCFRunLoopDefaultMode"));
     return a;
 }
+// ---- CF de Zenonia 5 (GVJK/JSONKit, FontManager de FontLabel, CocosDenshion, CoreText)
+typedef struct {
+    int loc, len;
+} cf_range;
+static int cf_enc(int e) { // CFStringEncoding -> ENC_
+    return e == 0x0100 || e == 0x14000100 ? ENC_UTF16 : e == 0 || e == 0x0201 || e == 0x0500 ? ENC_LATIN1 : ENC_UTF8;
+}
+static id cf_arrayCreate(void *a, id *vals, int n, void *cb) {
+    id r = ns_array_new();
+    for (int i = 0; i < n; i++)
+        ns_array_add(r, vals[i]);
+    return r;
+}
+static void cf_arrayGetValues(ns_array *a, cf_range r, id *out) {
+    for (int i = 0; i < r.len && r.loc + i < a->count; i++)
+        out[i] = a->items[r.loc + i];
+}
+id ns_data_new(const void *b, int n) { return data_new(c_NSMutableData, b, n, 1); }
+static id cf_dataCreate(void *a, const void *b, int n) { return data_new(c_NSData, b, n, 1); }
+static id cf_dataCreateMutable(void *a, int cap) { return data_new(c_NSMutableData, NULL, 0, 1); }
+static id cf_dataCreateNoCopy(void *a, const void *b, int n, void *dealloc) { return data_new(c_NSData, b, n, 1); }
+static void *cf_dataBytes(ns_data *d) { return d ? d->bytes : NULL; }
+static void cf_dataSetLength(ns_data *d, int n) {
+    if (n > d->cap) {
+        d->bytes = d->owned ? realloc(d->bytes, n + 1) : memcpy(malloc(n + 1), d->bytes, d->len);
+        memset(d->bytes + d->len, 0, n + 1 - d->len);
+        d->cap = n, d->owned = 1;
+    }
+    d->len = n;
+}
+static int cf_dictCount(ns_dict *d) { return d ? d->count : 0; }
+static void cf_dictGetKeysAndValues(ns_dict *d, id *k, id *v) {
+    for (int i = 0; i < d->count; i++) {
+        if (k)
+            k[i] = d->keys[i];
+        if (v)
+            v[i] = d->vals[i];
+    }
+}
+static int cf_dictGetValueIfPresent(ns_dict *d, id k, id *v) {
+    int i = dict_find(d, k);
+    if (i >= 0 && v)
+        *v = d->vals[i];
+    return i >= 0;
+}
+static void cf_dictRemoveValue(ns_dict *d, id k) { d_removeObjectForKey(d, NULL, k); }
+static uint32_t cf_hash(id o) { return (uint32_t)objc_msg(o, sel_registerName("hash"), 0, 0, 0, 0); }
+static id cf_makeCollectable(id o) { return o; }
+static id cf_numberCreate(void *a, int type, const void *v) {
+    switch (type) { // CFNumberType
+    case 1: case 7: return num_new(0, *(const int8_t *)v, 0);
+    case 2: case 8: return num_new(0, *(const int16_t *)v, 0);
+    case 4: case 11: return num_new(0, *(const int64_t *)v, 0);
+    case 5: case 12: return num_new(1, 0, *(const float *)v);
+    case 6: case 13: return num_new(1, 0, *(const double *)v);
+    default: return num_new(0, *(const int32_t *)v, 0);
+    }
+}
+static int cf_stringCompare(id a, id b, int flags) { // flags & 1 = kCFCompareCaseInsensitive
+    int r = (flags & 1) ? strcasecmp(ns_cstr(a), ns_cstr(b)) : strcmp(ns_cstr(a), ns_cstr(b));
+    return r < 0 ? -1 : r > 0;
+}
+static id cf_stringCreateWithBytes(void *a, const char *b, int n, int enc, int ext) {
+    return str_init_bytes(objc_alloc(c_NSString), b, n, cf_enc(enc));
+}
+static id cf_stringCreateWithBytesNoCopy(void *a, const char *b, int n, int enc, int ext, void *dealloc) {
+    return cf_stringCreateWithBytes(a, b, n, enc, ext);
+}
+static id cf_stringCreateWithCharactersNoCopy(void *a, const uint16_t *u, int n, void *dealloc) {
+    return str_init_bytes(objc_alloc(c_NSString), (const char *)u, n * 2, ENC_UTF16);
+}
+// CFStringGetBytes(str, range, enc, lossByte, isExtRep, buf, maxLen, *usedLen): solo UTF-8/ASCII.
+// ponytail: el rango se toma en bytes UTF-8 (igual a UTF-16 para texto ASCII, que es lo que serializa GVJK).
+static int cf_stringGetBytes(id s, cf_range r, int enc, int loss, int ext, uint8_t *buf, int max, int *used) {
+    const char *c = ns_cstr(s);
+    int n = strlen(c) - r.loc;
+    if (n > r.len)
+        n = r.len;
+    if (n < 0)
+        n = 0;
+    if (buf && n > max)
+        n = max;
+    if (buf)
+        memcpy(buf, c + r.loc, n);
+    if (used)
+        *used = n;
+    return n;
+}
+static int cf_stringMaxSize(int len, int enc) { return len * 3; }
+static id cf_urlCopyPathExtension(id url) {
+    const char *p = ns_cstr(url_path(url, NULL)), *dot = strrchr(p, '.');
+    return dot && !strchr(dot, '/') ? ns_string_new(dot + 1) : NULL;
+}
+static void cf_streamPairToHost(void *a, id host, int port, id *rd, id *wr) { // sin red
+    l_info("CFStreamCreatePairWithSocketToHost(%s:%d): red no disponible", ns_cstr(host), port);
+    if (rd)
+        *rd = NULL;
+    if (wr)
+        *wr = NULL;
+}
+static void ns_unionRange(cf_range *ret, cf_range a, cf_range b) {
+    int lo = a.loc < b.loc ? a.loc : b.loc, hi = a.loc + a.len > b.loc + b.len ? a.loc + a.len : b.loc + b.len;
+    *ret = (cf_range){lo, hi - lo};
+}
+static double k_kCFCoreFoundationVersionNumber = 793.00; // iOS 6.1
 static void *k_kCFAllocatorSystemDefault;
 static id k_kCFNumberNaN, k_kCFNumberNegativeInfinity, k_kCFNumberPositiveInfinity;
 
@@ -2379,17 +2484,30 @@ const import_entry foundation_imports[] = {
     F(SCNetworkReachabilityCreateWithAddress, cf_null), F(SCNetworkReachabilityCreateWithName, cf_null),
     F(SCNetworkReachabilityGetFlags, cf_zero), F(SCNetworkReachabilityScheduleWithRunLoop, cf_zero),
     F(SCNetworkReachabilitySetCallback, cf_zero), F(SCNetworkReachabilityUnscheduleFromRunLoop, cf_zero),
+    F(CFArrayCreate, cf_arrayCreate), F(CFArrayGetValues, cf_arrayGetValues), F(CFDataCreate, cf_dataCreate),
+    F(CFDataCreateMutable, cf_dataCreateMutable), F(CFDataCreateWithBytesNoCopy, cf_dataCreateNoCopy),
+    F(CFDataGetBytePtr, cf_dataBytes), F(CFDataGetMutableBytePtr, cf_dataBytes), F(CFDataSetLength, cf_dataSetLength),
+    F(CFDictionaryGetCount, cf_dictCount), F(CFDictionaryGetKeysAndValues, cf_dictGetKeysAndValues),
+    F(CFDictionaryGetValueIfPresent, cf_dictGetValueIfPresent), F(CFDictionaryRemoveValue, cf_dictRemoveValue),
+    F(CFHash, cf_hash), F(CFMakeCollectable, cf_makeCollectable), F(CFNumberCreate, cf_numberCreate),
+    F(CFStringCompare, cf_stringCompare), F(CFStringCreateWithBytes, cf_stringCreateWithBytes),
+    F(CFStringCreateWithBytesNoCopy, cf_stringCreateWithBytesNoCopy),
+    F(CFStringCreateWithCharactersNoCopy, cf_stringCreateWithCharactersNoCopy), F(CFStringGetBytes, cf_stringGetBytes),
+    F(CFStringGetMaximumSizeForEncoding, cf_stringMaxSize), F(CFURLCopyPathExtension, cf_urlCopyPathExtension),
+    F(CFStreamCreatePairWithSocketToHost, cf_streamPairToHost), F(NSUnionRange, ns_unionRange),
+    V(kCFCoreFoundationVersionNumber, &k_kCFCoreFoundationVersionNumber),
 };
 TABLE_END(foundation)
 
 // Constantes NSString de los frameworks que nadie implementó (NSFooKey, UIBarNotification, kCFBaz...):
 // una NSString con el nombre del símbolo, como hacen los frameworks de verdad (valores únicos).
 const import_entry *const_string_import(const char *name) {
-    static const char *pre[] = {"_NS", "_UI", "_kCF", "_kCA", "_kSec", "_GC", "_MP", "_AV", "_kAudio", "_kCG", "_CF"};
+    static const char *pre[] = {"_NS", "_UI", "_kCF", "_kCA", "_kSec", "_GC", "_GK", "_MP", "_AV", "_kAudio", "_kCG", "_CF"};
     static const char *suf[] = {"Key", "Notification", "Domain", "Name", "Type", "Mode", "Scope", "Exception",
                                 "Symbol", "Date", "Size", "Permissions", "Calendar", "Actions", "EaseInEaseOut",
                                 "Port", "Proxy", "Identifier", "Version", "Accessible", "Account", "Generic", "Service",
-                                "Class", "GenericPassword", "Limit", "LimitOne", "Data", "Unlocked", "Item"};
+                                "Class", "GenericPassword", "Limit", "LimitOne", "Data", "Unlocked", "Item",
+                                "Ambient", "Playback", "PlayAndRecord", "Code", "Fade", "Label", "Attributes"};
     int ok = 0;
     for (unsigned i = 0; i < sizeof(pre) / sizeof(pre[0]) && !ok; i++)
         ok = !strncmp(name, pre[i], strlen(pre[i]));

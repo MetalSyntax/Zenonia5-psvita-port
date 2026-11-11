@@ -26,6 +26,7 @@ unsigned int sceUserMainThreadStackSize = 2 * 1024 * 1024; // iOS: 1 MB el hilo 
 void darwin_init(void);
 void objc_rt_init(void);
 void uikit_init(void);
+void coretext_init(void);
 void ios5_init(void);
 
 static int next_log_number(void) {
@@ -99,6 +100,7 @@ int main(void) {
     objc_rt_init();
     foundation_init(); // clases nativas: antes de los binds (_OBJC_CLASS_$_...)
     uikit_init();
+    coretext_init(); // UIFont + texto (font.ttf)
     ios5_init();
     input_init();
 

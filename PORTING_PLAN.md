@@ -33,7 +33,7 @@
 - [x] `tools/ios_prep.py --arch armv7`: PIE exact → **33785 rebase words, 2889 bind slots / 689 symbols**.
 - [x] `tools/gen_cxx.py`: 39 libstdc++ imports resolved, 0 missing.
 - [x] `psvita-toolkit build --preset debug` → `build/zenonia5ios.vpk` builds.
-- [ ] **156 imports not covered**: `docs/imports_sin_cubrir.txt` (approximate grep: C++ EH names such as `__gxx_personality_v0` are probably false positives).
+- [x] ~~156 imports not covered~~ → **39 left** after phase 1 (2026-11-11), all deliberately left to the logging `unimpl` thunk/zero data block: `docs/imports_sin_cubrir.txt`, classified in `port_progress.md`.
 
 ## 2. What carries over from Android (Zenonia5-vita) and Zenonia 4
 
@@ -51,14 +51,14 @@
 ## 3. Phases
 
 ### Phase 1: Runtime coverage for this binary (offline)
-- [ ] **CGFont/CoreText glyph path** (see section 2), backed by `font.ttf` (add `FILE font.ttf font.ttf` to the VPK as in Z4). Map every `CGFontCreateWithFontName` name (AppleGothic, Arial, ArialMT, Arial Rounded MT Bold, Helvetica-Bold) to it. Implement it in the Ferrari master so other ports get it too.
-- [ ] CoreGraphics: `CGContextSetFont/SetFontSize/SetTextMatrix/ShowGlyphsAtPoint/AddPath/DrawPath/SetFillColorWithColor/SetStrokeColorWithColor`, `CGDataProviderCreateWithURL`, `CGRectNull`, `UIRectFill*`.
-- [ ] CoreFoundation: `CFData*`, `CFArrayCreate/GetValues`, `CFDictionary*`, `CFString*` bytes/encodings, `CFNumberCreate`, `CFHash`.
-- [ ] libc/zlib: `gzopen/gzread/gzclose`, `crc32` (vitasdk zlib), `asprintf`, `__vsnprintf_chk`, `bcopy`, `__sincos(f)_stret`, `backtrace*` (stub).
-- [ ] ObjC runtime: `class_addProperty`, `class_addProtocol`, `class_getClassMethod`, `class_isMetaClass`, `class_replaceMethod` (Facebook SDK / Gamevil hooks).
-- [ ] Constants: `AVAudioSessionCategory*`, `NS*Exception`, `UIKeyboard*`, `NSFileSystem*`, `GKPlayerAuthenticationDidChangeNotificationName`.
-- [ ] GL: `glDiscardFramebufferEXT` no-op, MSAA APPLE → plain storage / no-op.
-- [ ] Rerun the coverage grep.
+- [x] **CGFont/CoreText glyph path** (2026-11-11, `source/coretext.c`, FreeType over `font.ttf`, packed in the VPK as `app0:font.ttf`; every font name maps to it). Evidence of the clients (otool, armv7): `CCImage::initWithString` at 0x2525e (UIFont `fontWithName:size:` → `sizeWithFont:constrainedToSize:` → `drawInRect:withFont:lineBreakMode:alignment:`; one-glyph stroke branch with `CTFontCreatePathForGlyph` at 0x257f2), CCGX C++ font manager at 0x65d2e–0x66410 (CTFont metrics, `CTFontGetGlyphsForCharacters`/`GetAdvancesForGlyphs`), FontLabel/ZFont (`CGContextShowGlyphsAtPoint` 0x2a38c, cmap via `CGFontCopyTableForTag`). Host test: `tools/coretext_hosttest.c`. Kept local (not in the Ferrari master yet).
+- [x] CoreGraphics text/path calls, `CGDataProviderCreateWithURL`, `CGRectNull`, `UIRectFill`, `UIGraphicsPush/PopContext` (real stack now). Color-with-CGColor calls are no-ops (UIColor carries no color in this runtime; cocos draws text white).
+- [x] CoreFoundation (`foundation.c`): `CFData*`, `CFArrayCreate/GetValues`, `CFDictionary*`, `CFString*` bytes/encodings, `CFNumberCreate` (+ fixed `CFNumberGetValue` type map), `CFHash`, `CFURLCopyPathExtension`, `NSUnionRange`, `kCFCoreFoundationVersionNumber`=793; `CFStreamCreatePairWithSocketToHost` = no network.
+- [x] libc/zlib (`ios5.c`): `gzopen` (path-mapped)/`gzread/gzclose/crc32/uncompress/inflateInit2_`, `asprintf`, `__vsnprintf_chk`, `bcopy`, `reallocf`, `memset_pattern8`, `backtrace*`. `__sincos(f)_stret` have 0 call sites: left.
+- [x] ObjC runtime: `object_setClass` (GVJK/JSONKit), `objc_getMetaClass`, `objc_getRequiredClass`, `class_isMetaClass`, `class_getClassMethod`, `objc_setProperty_nonatomic`. Swizzling/dynamic-class calls (`method_*Implementation`, `class_replaceMethod`, `objc_*ClassPair`, `class_addProperty/Protocol`) stay as logging `unimpl` → 0: only `gamevilCircle checkDevice` (anti-crack, checks `dladdr` result → safe) and the GamevilWebView C helper use them.
+- [x] Constants: NSString constants via `const_string_import` (added `_GK` prefix and Ambient/Playback/PlayAndRecord/Code/Fade/Label/Attributes suffixes).
+- [x] GL: `glDiscardFramebufferEXT` no-op, `glRenderbufferStorageMultisampleAPPLE` → `glRenderbufferStorageOES`, resolve no-op.
+- [x] Rerun the coverage grep (39 left, see above). Build debug + VPK OK.
 
 ### Phase 2: First console boot (GATE: log reaches the delegate)
 - [ ] `tools/stage_data.sh` (620 MB, `.caf`/`.mp3` → `.ogg`) + `python3 -I tools/deploy_data.py`; install the VPK.

@@ -24,6 +24,7 @@ IMPORT_TABLE(foundation)
 IMPORT_TABLE(uikit)
 IMPORT_TABLE(cxx)
 IMPORT_TABLE(ios5)
+IMPORT_TABLE(coretext)
 
 // La Vita es softfp como iOS: floats y doubles viajan en registros enteros en los dos lados, así
 // que las funciones con float de newlib/vitaGL se enlazan directo. Lo que NO coincide: Darwin no

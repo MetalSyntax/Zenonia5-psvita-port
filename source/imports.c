@@ -7,7 +7,8 @@ static const struct {
     const import_entry *table;
     const int *count;
 } tables[] = {
-    {patch_imports, &patch_imports_count},   {darwin_imports, &darwin_imports_count},
+    {patch_imports, &patch_imports_count},   {coretext_imports, &coretext_imports_count},
+    {darwin_imports, &darwin_imports_count},
     {gles_imports, &gles_imports_count},     {openal_imports, &openal_imports_count},
     {audio_imports, &audio_imports_count},   {objc_imports, &objc_imports_count},
     {foundation_imports, &foundation_imports_count}, {uikit_imports, &uikit_imports_count},

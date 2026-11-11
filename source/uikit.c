@@ -47,7 +47,7 @@ typedef struct {
 static const CGAffineTransform IDENTITY = {1, 0, 0, 1, 0, 0};
 
 static objc_class *c_UIApplication, *c_UIView, *c_UIWindow, *c_CALayer, *c_CAEAGLLayer, *c_EAGLContext, *c_UIScreen,
-    *c_UIDevice, *c_UIAccelerometer, *c_UIAcceleration, *c_UITouch, *c_UIEvent, *c_UIImage, *c_UIColor, *c_UIFont,
+    *c_UIDevice, *c_UIAccelerometer, *c_UIAcceleration, *c_UITouch, *c_UIEvent, *c_UIImage, *c_UIColor,
     *c_UIAlertView, *c_UITextField, *c_UIViewController, *c_MPMoviePlayerController, *c_MPMusicPlayerController,
     *c_UINibDecoder;
 static id the_app, app_delegate, main_screen, cur_device, accel_obj;
@@ -801,6 +801,35 @@ static void cg_FillRect(cg_ctx *c, CGRect r) {
         for (int x = x0 < 0 ? 0 : x0; x < x1 && x < c->w; x++)
             put_px(c, c->data + (c->h - 1 - y) * c->bpr + x * (c->gray ? 1 : 4), px, 0);
 }
+// ---- para coretext.c (texto con FreeType): mapeo usuario -> memoria y píxel con cobertura
+int cg_ctx_map(void *ctx, float ux, float uy, float *col, float *row) {
+    cg_ctx *c = ctx;
+    if (!c || c->magic != CGCX)
+        return 0;
+    CGAffineTransform m = c->ctm;
+    *col = m.a * ux + m.c * uy + m.tx;
+    *row = c->h - (m.b * ux + m.d * uy + m.ty); // fila 0 de la memoria = arriba
+    return 1;
+}
+static int px_alpha(cg_ctx *c, const uint8_t *d) {
+    if (c->gray)
+        return d[0];
+    int mode = c->info & 0x1F, little = (c->info & 0x7000) == 0x2000, first = mode == 2 || mode == 4 || mode == 6;
+    return first != little ? d[0] : d[3];
+}
+// Cobertura 0-255 del color de relleno. ponytail: se queda con el mayor alfa en vez de componer
+// "over" (alcanza para glifos blancos con borde del mismo color, que es lo que dibuja cocos2d).
+void cg_ctx_cover(void *ctx, int col, int row, int cov) {
+    cg_ctx *c = ctx;
+    if (col < 0 || row < 0 || col >= c->w || row >= c->h || !cov)
+        return;
+    uint8_t *d = c->data + row * c->bpr + col * (c->gray ? 1 : 4);
+    int a = c->fill[3] * cov;
+    if (a <= px_alpha(c, d))
+        return;
+    uint8_t px[4] = {c->fill[0] * 255, c->fill[1] * 255, c->fill[2] * 255, a};
+    put_px(c, d, px, 0);
+}
 static cg_image *cg_BitmapCreateImage(cg_ctx *c) {
     uint8_t *px = malloc(c->w * c->h * 4);
     for (int y = 0; y < c->h; y++)
@@ -875,6 +904,16 @@ static void ui_BeginImageContext(float w, float h) {
     ui_ctx = cg_BitmapContextCreate(NULL, (int)w, (int)h, 8, 0, (void *)1, 1);
 }
 static cg_ctx *ui_GetCurrentContext(void) { return ui_ctx; }
+void *ui_current_ctx(void) { return ui_ctx; }
+static cg_ctx *ui_stack[8];
+static int ui_sp;
+static void ui_PushContext(cg_ctx *c) {
+    if (ui_sp < 8)
+        ui_stack[ui_sp++] = ui_ctx;
+    ui_ctx = c;
+}
+static void ui_PopContext(void) { ui_ctx = ui_sp ? ui_stack[--ui_sp] : NULL; }
+static void ui_RectFill(CGRect r) { cg_FillRect(ui_ctx, r); }
 static id ui_GetImage(void) { return ui_ctx ? AR(uiimage_from(cg_BitmapCreateImage(ui_ctx))) : NULL; }
 static void ui_EndImageContext(void) {
     cg_ContextRelease(ui_ctx);
@@ -892,9 +931,6 @@ static const nmethod uicolor_c[] = {
     NM("colorWithWhite:alpha:", ret_cls_obj), NM("colorWithPatternImage:", ret_cls_obj), {0}};
 static const nmethod uicolor_i[] = {
     NM("initWithRed:green:blue:alpha:", ret_self), NM("CGColor", ret_self), NM("set", v_noop), NM("setFill", v_noop), {0}};
-static const nmethod uifont_c[] = {
-    NM("systemFontOfSize:", ret_cls_obj), NM("boldSystemFontOfSize:", ret_cls_obj), NM("fontWithName:size:", ret_cls_obj),
-    NM("italicSystemFontOfSize:", ret_cls_obj), {0}};
 
 typedef struct {
     objc_class *isa;
@@ -1558,16 +1594,15 @@ const import_entry uikit_imports[] = {
     F(CGRectGetHeight, cg_RectGetHeight), F(CGRectContainsPoint, cg_RectContainsPoint), F(CGRectInset, cg_RectInset),
     F(CGAffineTransformScale, cg_AffineScale), F(CGDataProviderCreateWithData, cg_DataProviderCreateWithData),
     F(CGImageCreate, cg_ImageCreate), F(CGColorCreate, cg_dummy), F(CGColorRelease, cg_noop),
-    F(CGContextAddArcToPoint, cg_noop), F(CGContextAddRect, cg_noop), F(CGContextBeginPath, cg_noop),
-    F(CGContextClosePath, cg_noop), F(CGContextFillPath, cg_noop), F(CGContextMoveToPoint, cg_noop),
-    F(CGContextSetFillColor, cg_noop), F(CGContextSetLineWidth, cg_noop), F(CGContextSetShadowWithColor, cg_noop),
+    F(CGContextAddArcToPoint, cg_noop), F(CGContextAddRect, cg_noop),     F(CGContextClosePath, cg_noop), F(CGContextMoveToPoint, cg_noop),
+    F(CGContextSetFillColor, cg_noop), F(CGContextSetShadowWithColor, cg_noop),
     F(CGContextSetStrokeColor, cg_noop), F(CGContextSetStrokeColorSpace, cg_noop),
     F(CGContextStrokeLineSegments, cg_noop),
     V(CGPointZero, &k_CGPointZero), V(CGRectZero, &k_CGRectZero), V(CGSizeZero, &k_CGSizeZero),
     V(CGAffineTransformIdentity, &k_CGAffineTransformIdentity),
     F(UIGraphicsBeginImageContext, ui_BeginImageContext), F(UIGraphicsGetCurrentContext, ui_GetCurrentContext),
     F(UIGraphicsGetImageFromCurrentImageContext, ui_GetImage), F(UIGraphicsEndImageContext, ui_EndImageContext),
-    F(UIGraphicsPushContext, cg_noop), F(UIGraphicsPopContext, cg_noop), F(UIImagePNGRepresentation, ui_nil),
+    F(UIGraphicsPushContext, ui_PushContext), F(UIGraphicsPopContext, ui_PopContext), F(UIRectFill, ui_RectFill), F(UIImagePNGRepresentation, ui_nil),
     F(UIImageJPEGRepresentation, ui_nil), F(UIImageWriteToSavedPhotosAlbum, cg_noop),
     V(kEAGLColorFormatRGB565, &k_kEAGLColorFormatRGB565), V(kEAGLColorFormatRGBA8, &k_kEAGLColorFormatRGBA8),
     V(kEAGLDrawablePropertyColorFormat, &k_kEAGLDrawablePropertyColorFormat),
@@ -1608,7 +1643,6 @@ void uikit_init(void) {
     c_UIEvent = objc_define("UIEvent", "NSObject", sizeof(ui_event), uievent_i, NULL);
     c_UIImage = objc_define("UIImage", "NSObject", sizeof(ui_image), uiimage_i, uiimage_c);
     c_UIColor = objc_define("UIColor", "NSObject", 4, uicolor_i, uicolor_c);
-    c_UIFont = objc_define("UIFont", "NSObject", 4, NULL, uifont_c);
     c_UIAlertView = objc_define("UIAlertView", "UIView", sizeof(alert), uialert_i, NULL);
     c_UIViewController = objc_define("UIViewController", "UIResponder", 4, uivc_i, NULL);
     c_UITextField = objc_define("UITextField", "UIView", sizeof(text_field), uitf_i, NULL);
