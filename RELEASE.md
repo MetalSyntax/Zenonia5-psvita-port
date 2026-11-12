@@ -4,7 +4,7 @@ First public build of the native iOS → PS Vita port of *Zenonia 5: Wheel of De
 
 ## 📦 Release Package Contents
 
-1. **`zenonia5ios.vpk`** (`PSVZ5I001`, version `01.00`): the Mach-O loader with its Foundation / UIKit / CoreGraphics / CoreText / AudioToolbox / AVFoundation / OpenAL replacements, vitaGL presentation, FreeType text with a merged Latin + Korean `font.ttf`, the built-in server emulator and LiveArea.
+1. **`zenonia5ios.vpk`** (`PSVZ5I001`, version `01.00`): the Mach-O loader with its Foundation / UIKit / CoreGraphics / CoreText / AudioToolbox / AVFoundation / OpenAL replacements, vitaGL presentation, FreeType text with a merged Latin + Korean `font.ttf`, the built-in server emulator and a Zenonia 5 LiveArea (banner, background and startup logo).
 2. **`rebase.bin`**: relocation table of 33,785 absolute 32-bit pointers for the 1.1.3 `Zenonia5` executable (armv7 slice).
 3. **`binds.bin`**: 2,889 import slots that point into Apple frameworks, resolved by the loader at startup.
 4. **`controls.txt`**: button → touch mapping for the in-game HUD.
