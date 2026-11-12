@@ -1,118 +1,136 @@
-# iOS Mach-O Loader Boilerplate for PS Vita
+<h1 align="center">
+  <img src="extras/livearea/pic0.png" alt="Zenonia 5 PS Vita Banner" width="700"><br>
+  Zenonia 5: Wheel of Destiny · PS Vita Port
+</h1>
 
-A reusable boilerplate and scaffolding framework for porting classic 32-bit iOS games (ARMv6 / ARMv7, 32-bit Mach-O `MH_EXECUTE`) to the PlayStation Vita.
-This is the iOS counterpart to [`soloader-boilerplate`](https://github.com/Rinnegatamante/soloader-boilerplate) (Android), based on the proven, battle-tested architecture developed in [`Inotia2-vita`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/Inotia2-vita).
+<p align="center">
+  <a href="#-status--playability">Status & Playability</a> •
+  <a href="#setup-instructions-for-players">How to install</a> •
+  <a href="#controls">Controls</a> •
+  <a href="#known-issues">Known Issues</a> •
+  <a href="#build-instructions-for-developers">How to compile</a> •
+  <a href="#credits--acknowledgments">Credits</a>
+</p>
 
----
-
-## Loader Architecture
-
-| Component | File(s) | Role & Emulation Functionality |
-|---|---|---|
-| **Mach-O Loader** | [`source/macho.c`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/macho.c), [`source/macho.h`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/macho.h) | Custom static dyld and 32-bit Mach-O executable loader with fixed base address (`MACHO_SLIDE = 0x98000000`). Applies data segment rebases, resolves import tables (`__la_symbol_ptr`, `__nl_symbol_ptr`), and binds stubs for unhandled symbols. |
-| **Assembly Glue & Trampolines** | [`source/asm.S`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/asm.S) | `call_guest` and `call_guest6` (preserve `r9`). `ml_align_call` (bridges iOS 4-byte stack alignment to VitaSDK/newlib 8-byte AAPCS). `ml_unimpl_entry` (auto-logging unimplemented stub). |
-| **Darwin / POSIX Subsystem** | [`source/darwin.c`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/darwin.c), [`source/darwin.h`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/darwin.h) | Darwin libc, libgcc, pthreads, and sockets emulation. Thread-safe POSIX wrapper with `SceUID` tracking (prevents fatal crashes on `pthread_detach`). High-precision `mach_absolute_time()` mapped to `sceKernelGetProcessTimeWide()`. |
-| **Variadic Formatter** | [`source/darwin_printf.c`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/darwin_printf.c), [`source/darwin_printf.h`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/darwin_printf.h) | Printf engine tailored to Darwin's ARM ABI: reads 64-bit doubles and integers from unaligned word boundaries, with native support for Objective-C's `%@` specifier (`NSString*`). |
-| **Mini-runtime ObjC / UIKit** | [`source/objc.c`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/objc.c), [`source/objc.h`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/objc.h) | Fast selector-based dispatching with `objc_msgSend` and `objc_msgSend_stret`. Emulates `NSString`, `UIFont` (rendered using a FreeType glyph atlas), `NSBundle` (`resourcePath`), `NSCalendar`, `UIDevice`, and on-screen keyboard via `sceImeDialog`. |
-| **OpenGL ES Graphics Backend** | [`source/gles.c`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/gles.c), [`source/gles.h`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/gles.h), [`source/vitagl_no_splash.c`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/vitagl_no_splash.c) | GLES1 and GLES2 pipeline powered by vendored `vitaGL` compiled with `SOFTFP_ABI=1`. Virtual FBO supports display orientation rotation and aspect-ratio scaling (portrait/landscape to Vita's native 960x544). Converts `GL_FIXED` vertex arrays and disables blocking splashscreens. |
-| **CgBI PNG Decoder** | [`source/cgbi.c`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/cgbi.c), [`source/cgbi.h`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/cgbi.h) | Native decompressor and BGR-to-RGB byte-swap converter for Apple's proprietary CgBI-optimized PNG assets, allowing intact IPA bundles to load directly without offline conversion. |
-| **CoreAudio Backend** | [`source/coreaudio.c`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/coreaudio.c) | Emulates AudioUnit RemoteIO and AudioSession on a dedicated high-priority `sceAudioOut` audio thread. |
-| **Input Subsystem** | [`source/input.c`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/input.c), [`source/input.h`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/input.h) | Maps PS Vita physical buttons and front capacitive multitouch screen to iOS touch events (`UITouchPhaseBegan`, `Moved`, `Ended`). |
-| **Logging Subsystem** | [`source/log.c`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/log.c), [`source/log.h`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/log.h) | Rotating on-device file logger (`ux0:data/<slug>/logs/log_001.log` .. `log_999.log`) and live stdout streaming. |
-| **Game Patches & Glue** | [`source/patch.c`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/patch.c), [`source/patch.h`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/patch.h) | Dedicated hooks for game-specific memory patches, symbol redirection, and custom bypasses. |
+An unofficial, native **iOS-to-PS Vita wrapper port** of *Zenonia 5: Wheel of Destiny* (originally developed by **Gamevil**). There is no ELF of the game here: this port ships its own **Mach-O loader** that maps the official ARMv7 executable (`Zenonia5`, armv7 slice of the 1.1.3 IPA) into PS Vita RAM and replaces the Apple frameworks it uses (Foundation, UIKit, CoreGraphics/CoreText, AudioToolbox, AVFoundation, OpenAL, SystemConfiguration, StoreKit) with native implementations on top of **vitaGL**, **FreeType**, **libvorbis** and the Vita system libraries. The game's online server no longer exists, so the login it needs is answered by a small **server emulator** built into the loader.
 
 ---
 
-## Critical iOS on PS Vita ABI Rules
+## 🎮 Status & Playability
 
-1. **`r9` as a Scratch Register**:
-   - In Apple's Darwin ARMv6/v7 ABI, `r9` is an available scratch register (not callee-saved).
-   - In the standard ARM AAPCS (used by VitaSDK/newlib), `r9` is callee-saved or platform-reserved.
-   - **Rule**: The entire loader codebase MUST be compiled with `-ffixed-r9`, and any execution transfer into the game binary must transition through `call_guest` / `call_guest6` in [`source/asm.S`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/source/asm.S) to prevent register corruption.
-2. **SoftFP Calling Convention**:
-   - iOS 32-bit binaries pass single and double precision floats in integer registers (`r0..r3`).
-   - `vitaGL` MUST be compiled with `SOFTFP_ABI=1` so that internal calls and GXM commands (`sceGxmSetViewport`, etc.) maintain proper argument alignment.
-3. **4-Byte Stack Alignment**:
-   - 32-bit iOS code only enforces 4-byte stack alignment.
-   - VitaSDK newlib functions (especially `printf`, `malloc`, and math routines) expect an 8-byte aligned stack (AAPCS).
-   - All C callbacks invoked by the game binary enter through `ml_align_call` to re-align `sp` to an 8-byte boundary before calling newlib or vitaGL.
-4. **FairPlay DRM Decryption**:
-   - The Mach-O executable in the IPA must be completely decrypted (`cryptid = 0`).
-   - Binaries dumped directly from an encrypted app package will crash immediately with a Data Abort when loaded.
+**Status: PLAYABLE (beta) (v0.1)**
 
----
+On physical PlayStation Vita hardware the game boots, reaches the title screen and the main menu without online popups, and is playable in-game.
 
-## Included Tools (`tools/`)
-
-- [`tools/macho_prep.py`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/tools/macho_prep.py): Analyzes thin or fat Mach-O executables, verifies `cryptid == 0`, scans `__DATA` pointers against symbols, and generates `rebase.bin`.
-- [`tools/annotate.py`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/tools/annotate.py): Disassembles functions, resolving PIC calls, ObjC selectors, classes, and literal strings.
-- [`tools/cgbi_check.py`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/tools/cgbi_check.py): Verifies and extracts Apple CgBI-compressed PNG files.
-- [`tools/printf_check.py`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/tools/printf_check.py): Validates variadic string format specifiers and alignment.
-- [`tools/stage_data.sh`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/tools/stage_data.sh): Packages and organizes game assets into `ux0_data/<slug>/`.
-- [`tools/deploy_data.py`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/tools/deploy_data.py): Incremental FTP deployment directly to the PS Vita (VitaShell).
+- [x] **Mach-O loader**: maps the image `0x4000–0x24C000` at `0x98004000` (`MACHO_SLIDE`), applies 33,785 rebase words, resolves 2,889 import slots (46 left as logging stubs), registers the game's 116 Objective-C classes and runs its 217 static initializers. *Verified on console.*
+- [x] **Graphics**: cocos2d-x (GLES1) on vitaGL. The game is told it runs on an iPhone 5 (`UIScreenMode` 640×1136, landscape views 568×320), so it uses its 16:9 layout, scaled to the full 960×544 screen. *Verified on console.*
+- [x] **Text & Fonts**: CoreText/CoreGraphics/FontLabel text is rendered with FreeType from one bundled `font.ttf`: NanumGothic (Latin + Korean) merged with the accented Latin glyphs of DejaVu Sans (`tools/merge_latin_font.py`), so Spanish text shows á é í ó ú ñ. *Verified on console.*
+- [x] **Online**: Gamevil Live and the in-app purchase notice are disabled (Objective-C method overrides, port of the iPhone tweak in `tools/iphone/z5nolive.m`); the login to the game server is answered locally with a default player ID (`jugador01`). *Verified on console.*
+- [x] **Touch & Controls**: front touch screen plus physical buttons mapped to the on-screen joystick, attack and skills through `controls.txt`. *Verified on console.*
+- [x] **Audio**: music (`AVAudioPlayer`) and sound effects (OpenAL/CocosDenshion) play through `sceAudioOut` from `.ogg` files converted from the IPA. *Verified on console.*
+- [x] **Saves**: progress is written to `ux0:data/zenonia5ios/Documents/zndata.dat`.
+- [x] **Hidden touch HUD**: the on-screen joystick, attack and skill buttons are hidden (still active to touch); **L + R** shows or hides them.
+- [ ] **Performance**: CPU at 444 MHz. The game caps itself at 30 FPS; menus run at 27–30 FPS, busy fights drop to about 21–24 FPS, and going from the title to the menu still takes several seconds (see Known Issues).
 
 ---
 
-## LiveArea Assets (`extras/livearea/`)
+## Disclaimer
 
-The repository stores all LiveArea presentation assets in [`extras/livearea/`](file:///Volumes/TOSHIBA%20EXT/PSVITA%20Develop/ios-loader-boilerplate/extras/livearea):
-- `icon0.png`: 128×128 application icon (official iOS wordmark on light gray `#E5E5EA`).
-- `pic0.png`: 960×544 splash screen ("iPhone OS" in Helvetica Neue typography on charcoal `#202020`).
-- `startup.png`: 280×158 LiveArea startup gate button.
-- `bg0.png`: 840×500 LiveArea background (faceted geometric low-poly mesh in Apple slate gray).
-- `template.xml`: Vita LiveArea layout definition.
+**Zenonia** is a registered trademark of **Gamevil Inc. (Com2uS Holdings)**. The work presented in this repository is unofficial and is not produced, endorsed, or sanctioned by Gamevil or any affiliated entities.
 
-These files are automatically mapped directly into `sce_sys/` inside the output `.vpk` by `vita_create_vpk` in `CMakeLists.txt`.
+This software does NOT contain original game code, binaries, copyrighted graphics, or game assets. The authors do not promote or condone piracy in any way. To play, you must provide your own legally obtained, **decrypted** copy of the iOS `.ipa`.
 
 ---
 
-## Target Console Directory Layout (`ux0:data/<slug>/`)
+## Setup Instructions (For Players)
 
-```
-ux0:data/<slug>/
-  <AppName>.app/   Extracted iOS game bundle (.png, .caf, .fsb, plist assets)
-  rebase.bin       Rebase relocation table generated by tools/macho_prep.py
-  saves/           Game save directory (mapped to iOS Documents/ folder)
-  logs/            Runtime execution logs (log_001.log .. log_999.log)
-```
+1. **CFW & Plugins**: PS Vita on Custom Firmware (**Enso 3.60 / 3.65** recommended) with **kubridge** in `ur0:tai/config.txt`:
+   ```ini
+   *KERNEL
+   ur0:tai/kubridge.skprx
+   ```
+2. **Shader Compiler**: `libshacccg.suprx` must be in `ur0:data/` (extract it with **ShaRKBR33D**).
+3. **Game Files**: a decrypted *Zenonia 5* **1.1.3** IPA (`cryptid 0`). On a PC with Python 3 (+ `capstone`) and `ffmpeg`, clone this repo, extract `Payload/Zenonia5.app/` and run:
+   ```bash
+   tools/stage_data.sh path/to/Zenonia5.app
+   ```
+   It builds `ux0_data/zenonia5ios/`: the app bundle, `rebase.bin` / `binds.bin` and the music converted to `.ogg`.
+   (`rebase.bin` and `binds.bin` are also attached to the release.)
+4. **Copy to the Vita** (`ux0:data/zenonia5ios/`), plus `extras/controls.txt`:
+   ```
+   ux0:data/zenonia5ios/
+     game_app/      the app bundle (executable + data, sound/*.ogg)
+     rebase.bin     relocation table for the 1.1.3 executable
+     binds.bin      import slots resolved by the loader
+     controls.txt   button -> touch mapping (editable over FTP)
+     Documents/     created automatically — your save (zndata.dat)
+     logs/          created automatically — zenonia5ios_NNN.log, one per run
+   ```
+5. **Install VPK**: install `zenonia5ios.vpk` with VitaShell.
 
 ---
 
-## Quick Start & Port Initialization
+## Controls
 
-Using `psvita-toolkit`:
+| Input | Action | Status |
+| :---: | :--- | :---: |
+| **Touch screen** | Game touch controls | ✅ Working |
+| **Left stick / D-Pad** | Move (drags the on-screen joystick) | ✅ Working |
+| **Cross (✕)** | Attack | ✅ Working |
+| **Square / Triangle / Circle / R** | Skills | ✅ Working |
+| **Start** | Pause | ✅ Working |
+| **Select / L** | Skip (red button, top right) | ✅ Working |
+| **L + R** | Show / hide the touch joystick, attack and skill buttons | 🧪 New |
+
+> [!TIP]
+> Every button is just a touch on a screen point, defined in `ux0:data/zenonia5ios/controls.txt` (568×320 coordinates, up to 10 buttons plus `STICK x y radius`). Edit it over FTP; no rebuild needed. Holding **Select + Start** for 2 s rotates the image (saved in `rotation.txt`).
+
+---
+
+## Known Issues
+
+- **Title → menu is slow**: each login re-reads and rewrites the save, which takes about 1.7 s per step on the Vita's CPU, plus texture decoding of large UI sheets. v0.1 removes a fixed 1 s wait per connection, but the transition is still several seconds.
+- **Frame drops in busy fights**: about 21–24 FPS against the game's 30 FPS cap; GPU time is small (≈2 ms), most of the frame is game code. Profiling is pending.
+- **Online features disabled**: Gamevil Live, PvP, rankings, mail, gacha and the shop talk to an emulated server; anything beyond the login gets an empty answer and may show empty lists.
+- **No in-app purchases**: the store is disabled on purpose.
+- **Crash dumps** are written by the system to `ux0:data/` (not to the game folder).
+
+---
+
+## Build Instructions (For Developers)
+
+### Prerequisites
+
+- [VitaSDK](https://vitasdk.org/) (`$VITASDK`) with `kubridge`, FreeType, libvorbis/libogg, libpng and zlib.
+- CMake 3.14+, Python 3 with `capstone` and `fontTools` (for the tools), `ffmpeg` (music conversion).
+- A decrypted 1.1.3 IPA, extracted locally (never committed; `game_app` is a symlink to the `.app`).
+
+### Compilation Commands
+
 ```bash
-# Initialize a new iOS port directly from an IPA file:
-psvita-toolkit init-port --ipa /path/to/game.ipa
-
-# Validate LiveArea assets:
-psvita-toolkit livearea validate
-
-# Build vitaGL with SoftFP ABI support:
-cd vendor/vitaGL && ./build_vitagl.sh
-
-# Configure and compile the VPK:
-cmake -B build
+git clone https://github.com/MetalSyntax/Zenonia5-psvita-port.git
+cd Zenonia5-psvita-port
+tools/stage_data.sh game_app
+cmake -S . -B build
 cmake --build build
 ```
 
+### Deploy & Debug
+
+```bash
+python3 -I tools/deploy_data.py          # sync ux0_data/zenonia5ios/ to the Vita over FTP (VitaShell, port 1337)
+python3 -I tools/deploy_data.py --logs   # fetch logs/zenonia5ios_NNN.log and .psp2dmp crash dumps
+```
+
+A crash at `PC = X` maps to `X - 0x98000000` in the armv7 slice (`lipo -thin armv7`, `otool -tV`); `tools/annotate.py` helps read the disassembly. Architecture and progress notes: [`PORTING_PLAN.md`](PORTING_PLAN.md) and [`port_progress.md`](port_progress.md).
+
 ---
 
-## ☕ Support My Work
+## Credits & Acknowledgments
 
-This project is **free** and will stay free. If you enjoy it, a tip from **$1** helps me keep porting games to the PS Vita:
-
-<p align="center">
-  <a href="https://ko-fi.com/metalsyntax"><img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="Support me on Ko-fi"></a>
-</p>
-
-- **Ko-fi:** [ko-fi.com/metalsyntax](https://ko-fi.com/metalsyntax)
-- **PayPal:** [paypal.me/MetalSyntax](https://paypal.me/MetalSyntax)
-- **Bitcoin (BTC):** `133HdCsaWxdjTfmwpgGVykByhNBV338uRc`
-
-**Ko-fi supporters get:**
-- **Early access** to new ports before their public release (test builds of upcoming projects).
-- **Data preparation scripts and step-by-step guides** to set up your own game files for each new port.
-- A say in which games I port next.
-
-> Game files are never distributed. You always need your own legally obtained copy of the game.
+- **Zenonia 5: Wheel of Destiny** is intellectual property of **Gamevil Inc.**, built on cocos2d-x.
+- **vitaGL** graphics library by [Rinnegatamante](https://github.com/Rinnegatamante/vitaGL).
+- **kubridge** plugin by [Bythos](https://github.com/bythos14/kubridge).
+- **FreeType**, **libvorbis**, **NanumGothic** (SIL OFL) and **DejaVu Sans** (Bitstream Vera license) fonts.
+- The Mach-O loader and runtime are shared with [Ferrari-GT-Evolution-vita](https://github.com/MetalSyntax/Ferrari-GT-Evolution-vita) and [Feanor-iOS-vita](https://github.com/MetalSyntax/Feanor-iOS-vita); sibling ports: [Zenonia 4](https://github.com/MetalSyntax/Zenonia4-psvita-port), [Zenonia 3](https://github.com/MetalSyntax/zenonia3-psvita-port), [Zenonia 2](https://github.com/MetalSyntax/Zenonia2-psvita-port).
+- Special thanks to the PS Vita homebrew and porting community.
