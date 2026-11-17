@@ -568,7 +568,7 @@ static int aq_NewOutput(const asbd *fmt, void *cb, void *ud, void *rl, void *mod
         *out = NULL;
         return -1;
     }
-    q->thread = sceKernelCreateThread("ml_aq", aq_thread, 0x10000100, 0x10000, 0, 0, NULL);
+    q->thread = sceKernelCreateThread("ml_aq", aq_thread, 0x10000100, 0x10000, 0, SCE_KERNEL_CPU_MASK_USER_1 | SCE_KERNEL_CPU_MASK_USER_2, NULL);
     sceKernelStartThread(q->thread, sizeof(q), &q);
     l_info("AudioQueue: %.0f Hz, %u canales", fmt->mSampleRate, (unsigned)fmt->mChannelsPerFrame);
     *out = q;

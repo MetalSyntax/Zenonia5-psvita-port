@@ -138,7 +138,7 @@ static int au_Start(audio_unit *u) {
     if (u->running || !u->proc)
         return 0;
     u->running = 1;
-    u->thread = sceKernelCreateThread("coreaudio", audio_thread, 0x10000100, 256 * 1024, 0, 0, NULL);
+    u->thread = sceKernelCreateThread("coreaudio", audio_thread, 0x10000100, 256 * 1024, 0, SCE_KERNEL_CPU_MASK_USER_1 | SCE_KERNEL_CPU_MASK_USER_2, NULL);
     sceKernelStartThread(u->thread, sizeof(u), &u);
     return 0;
 }

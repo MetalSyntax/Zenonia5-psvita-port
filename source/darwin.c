@@ -510,6 +510,12 @@ static int d_sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *n
     return -1;
 }
 static int d_sysctl(int *name, unsigned namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {
+    // {CTL_HW, HW_PAGESIZE}: Com2uS (CS_knlGetFreeMemory) = pagesize * free_count de host_statistics
+    if (namelen == 2 && name[0] == 6 && name[1] == 7 && oldp && oldlenp && *oldlenp >= 4) {
+        *(int *)oldp = 4096;
+        *oldlenp = 4;
+        return 0;
+    }
     errno = ENOENT;
     return -1;
 }
@@ -726,6 +732,7 @@ typedef struct {
 static void *thread_tramp(void *p) {
     guest_thread t = *(guest_thread *)p;
     free(p);
+    sceKernelChangeThreadCpuAffinityMask(sceKernelGetThreadId(), SCE_KERNEL_CPU_MASK_USER_1 | SCE_KERNEL_CPU_MASK_USER_2);
     return (void *)call_guest(t.fn, (uint32_t)t.arg, 0, 0, 0);
 }
 static int d_pthread_create(pthread_t *thr, const d_attr *da, void *fn, void *arg) {

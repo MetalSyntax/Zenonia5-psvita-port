@@ -515,7 +515,12 @@ static id hit_view(id root, float x, float y) {
         id s = ns_array_get(subs, i);
         CGRect f = VX(s)->frame;
         float lx = x - f.o.x, ly = y - f.o.y;
-        if (!is_win && (lx < 0 || ly < 0 || lx >= f.s.w || ly >= f.s.h))
+        // Hijas de la ventana a pantalla completa (o sin frame) aceptan en cualquier orientación; las chicas
+        // solo si el punto cae adentro, como en iOS (Inotia 4: ícono del Hub de Com2uS, ImageButton en
+        // (320,480) 0x0, se comía todos los toques).
+        int full = (f.s.w == 0 && f.s.h == 0 && f.o.x == 0 && f.o.y == 0) || // frame nunca fijado
+                   (f.s.w >= PORT_SCREEN_W && f.s.h >= PORT_SCREEN_W);
+        if ((!is_win || !full) && (lx < 0 || ly < 0 || lx >= f.s.w || ly >= f.s.h))
             continue;
         id r = hit_view(s, is_win ? x : lx, is_win ? y : ly);
         if (r)
@@ -531,8 +536,9 @@ void ui_touch_event(int finger, int phase, float x, float y) {
     id view = phase == 0 ? hit_view(key_window, x, y) : live[finger] ? live[finger]->view : NULL;
     static int nlog; // ponytail: diagnóstico corrida 015 (no pasa de la pantalla de sonido). Quitar al avanzar.
     if (phase != 1 && nlog++ < 300)
-        l_info("toque dedo %d fase %d (%.0f, %.0f) -> %s", finger, phase, x, y,
-               view ? class_getName(object_getClass(view)) : "SIN VISTA");
+        l_info("toque dedo %d fase %d (%.0f, %.0f) -> %s [%.0f,%.0f %.0fx%.0f]", finger, phase, x, y,
+               view ? class_getName(object_getClass(view)) : "SIN VISTA", view ? VX(view)->frame.o.x : 0,
+               view ? VX(view)->frame.o.y : 0, view ? VX(view)->frame.s.w : 0, view ? VX(view)->frame.s.h : 0);
     if (!view)
         return;
     double now = sceKernelGetProcessTimeWide() / 1e6;
@@ -759,6 +765,9 @@ static void *cg_ColorSpaceRGB(void) { return (void *)1; }
 static void *cg_ColorSpaceGray(void) { return (void *)2; }
 static void cg_noop(void) {}
 static void *cg_BitmapGetData(cg_ctx *c) { return c->data; }
+static int cg_BitmapGetWidth(cg_ctx *c) { return c ? c->w : 0; }
+static int cg_BitmapGetHeight(cg_ctx *c) { return c ? c->h : 0; }
+static int cg_BitmapGetBytesPerRow(cg_ctx *c) { return c ? c->bpr : 0; }
 static void cg_TranslateCTM(cg_ctx *c, float tx, float ty) {
     c->ctm.tx += c->ctm.a * tx + c->ctm.c * ty;
     c->ctm.ty += c->ctm.b * tx + c->ctm.d * ty;
@@ -781,7 +790,8 @@ static void put_px(cg_ctx *c, uint8_t *d, const uint8_t *s, int premul_src) {
     else if (!want_premul && premul_src && a)
         r = r * 255 / a, g = g * 255 / a, b = b * 255 / a;
     if (c->gray) {
-        d[0] = alpha_mode == 7 ? a : (r * 77 + g * 151 + b * 28) >> 8;
+        // sin alfa: luminancia ponderada por la cobertura (borde suavizado sobre el fondo)
+        d[0] = alpha_mode == 7 ? a : ((r * 77 + g * 151 + b * 28) >> 8) * (want_premul ? 255 : a) / 255;
         return;
     }
     int little = (c->info & 0x7000) == 0x2000; // kCGBitmapByteOrder32Little
@@ -864,6 +874,8 @@ static void cg_ClearRect(cg_ctx *c, CGRect r) {
 static void cg_SetRGBFill(cg_ctx *c, float r, float g, float b, float a) {
     c->fill[0] = r, c->fill[1] = g, c->fill[2] = b, c->fill[3] = a;
 }
+// Inotia 4 (SGL_RenderFontToAlphaImage): texto blanco sobre contexto gris = máscara alfa del texto
+static void cg_SetGrayFill(cg_ctx *c, float g, float a) { cg_SetRGBFill(c, g, g, g, a); }
 static void cg_FillRect(cg_ctx *c, CGRect r) {
     if (!c || c->magic != CGCX)
         return;
@@ -1566,6 +1578,9 @@ static int wd_thread(SceSize args, void *argp) {
         } else if (now - since > 8 * 1000000ULL) {
             l_error("[WATCHDOG] 8 s sin presentRenderbuffer (frames=%u%s): crash deliberado para el dump", (unsigned)frames,
                     in_present ? ", dentro de present" : "");
+            extern void ns_timers_log(void);
+            ns_timers_log(); // TMP Inotia 4
+            l_info("ime abierto %d, campo %p, alerta diferida %p", ime_open_now, (void *)ime_field, (void *)deferred_alert);
             sceKernelDelayThread(200000); // que llegue el log
             *(volatile int *)0 = 0;
         }
@@ -1653,12 +1668,14 @@ const import_entry uikit_imports[] = {
     F(CGImageGetAlphaInfo, cg_AlphaInfo), F(CGImageGetColorSpace, cg_ColorSpace), F(CGImageRetain, cg_ImageRetain),
     F(CGImageRelease, cg_image_release), F(CGImageCreateWithMask, cg_ImageCreateWithMask),
     F(CGBitmapContextCreate, cg_BitmapContextCreate), F(CGBitmapContextGetData, cg_BitmapGetData),
+    F(CGBitmapContextGetWidth, cg_BitmapGetWidth), F(CGBitmapContextGetHeight, cg_BitmapGetHeight),
+    F(CGBitmapContextGetBytesPerRow, cg_BitmapGetBytesPerRow),
     F(CGBitmapContextCreateImage, cg_BitmapCreateImage), F(CGContextRelease, cg_ContextRelease),
     F(CGContextDrawImage, cg_DrawImage), F(CGContextClearRect, cg_ClearRect), F(CGContextTranslateCTM, cg_TranslateCTM),
     F(CGContextScaleCTM, cg_ScaleCTM), F(CGContextRotateCTM, cg_RotateCTM), F(CGContextSetRGBFillColor, cg_SetRGBFill),
     F(CGContextFillRect, cg_FillRect), F(CGContextSetBlendMode, cg_noop), F(CGContextSetInterpolationQuality, cg_noop),
     F(CGContextSetShouldAntialias, cg_noop), F(CGContextSetAllowsAntialiasing, cg_noop),
-    F(CGContextSaveGState, cg_noop), F(CGContextRestoreGState, cg_noop), F(CGContextSetGrayFillColor, cg_noop),
+    F(CGContextSaveGState, cg_noop), F(CGContextRestoreGState, cg_noop), F(CGContextSetGrayFillColor, cg_SetGrayFill),
     F(CGContextSetTextDrawingMode, cg_noop), F(CGContextSetAlpha, cg_noop), F(CGContextDrawLinearGradient, cg_noop),
     F(CGColorSpaceCreateDeviceRGB, cg_ColorSpaceRGB), F(CGColorSpaceCreateDeviceGray, cg_ColorSpaceGray),
     F(CGColorSpaceRelease, cg_noop), F(CGGradientCreateWithColorComponents, cg_dummy), F(CGGradientRelease, cg_noop),

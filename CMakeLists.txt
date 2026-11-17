@@ -64,6 +64,7 @@ add_executable(${CMAKE_PROJECT_NAME}
   source/vitagl_no_splash.c
   source/openal.c
   source/audio.c
+  source/coreaudio.c
   source/input.c
   source/cgbi.c
   source/cxx_imports.c

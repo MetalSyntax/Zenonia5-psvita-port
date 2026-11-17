@@ -10,7 +10,8 @@ static const struct {
     {patch_imports, &patch_imports_count},   {coretext_imports, &coretext_imports_count},
     {darwin_imports, &darwin_imports_count},
     {gles_imports, &gles_imports_count},     {openal_imports, &openal_imports_count},
-    {audio_imports, &audio_imports_count},   {objc_imports, &objc_imports_count},
+    {audio_imports, &audio_imports_count},   {coreaudio_imports, &coreaudio_imports_count},
+    {objc_imports, &objc_imports_count},
     {foundation_imports, &foundation_imports_count}, {uikit_imports, &uikit_imports_count},
     {cxx_imports, &cxx_imports_count},       {ios5_imports, &ios5_imports_count},
 };

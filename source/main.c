@@ -5,6 +5,7 @@
 #include <psp2/io/dirent.h>
 #include <psp2/io/stat.h>
 #include <psp2/kernel/processmgr.h>
+#include <psp2/kernel/threadmgr.h>
 #include <psp2/power.h>
 #include <psp2/system_param.h>
 #include <stdio.h>
@@ -70,6 +71,9 @@ int main(void) {
     scePowerSetBusClockFrequency(222);
     scePowerSetGpuClockFrequency(222);
     scePowerSetGpuXbarClockFrequency(166);
+    // El hilo del juego solo en el núcleo 0; audio (mezcla de FMOD en el callback de coreaudio) e hilos del juego en 1-2
+    // (darwin.c, audio.c, coreaudio.c): ningún otro hilo le quita tiempo al frame.
+    sceKernelChangeThreadCpuAffinityMask(sceKernelGetThreadId(), SCE_KERNEL_CPU_MASK_USER_0);
 
     char log_path[128];
     snprintf(log_path, sizeof(log_path), LOGS_PATH PORT_SLUG "_%03d.log", next_log_number());

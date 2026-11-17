@@ -45,3 +45,14 @@ No se tocó el maestro ni se corrió `sync_runtime.sh` (otro agente lo está edi
 - JSON (GVJK/JSONKit) crea objetos con `object_setClass` sobre memoria propia; solo se usa en red/Gamevil Live, que está sin red. Si se usa al arrancar (config), es el sospechoso.
 - `controls.txt` sale del ejemplo genérico (coordenadas 480x320); Zenonia 5 es 568x320 puntos: ajustar después de ver la UI.
 - Audio (fase 5): `sound/NNN.caf` y `sound/NNN.mp3` comparten nombre y `stage_data.sh`/AudioFile usan `NNN.ogg` para ambos: quedó una sola conversión por número (150 `.ogg`). Si SFX y BGM suenan cambiados, separar los nombres (p. ej. `NNN.caf.ogg`) en `stage_data.sh` + `audio.c`.
+
+## 2026-11-17 — runtime de Inotia 4 + extras de Zenonia 2 / Destinia
+
+- Runtime común traído desde `../Inotia4-iOS-vita` (`tools/sync_runtime.sh`, que ahora va más adelantado que este
+  origen): menú de opciones con START+SELECT corto (juego en pausa; SELECT+START 2 s sigue rotando), START/SELECT tocan
+  al soltar, coreaudio.c, caché de glifos, afinidad de núcleos, fixes de Foundation/UIKit.
+- Extras nuevos: varias teclas por acción (X reemplaza, cuadrado agrega, triángulo quita; `CROSS+REAR_BR` / `NONE` en
+  controls.txt), táctil trasero por cuadrantes (REAR_TL/TR/BL/BR), "Restaurar botones por defecto"
+  (controls.default.txt), relación de aspecto y filtro de escalado (ASPECT/FILTER en controls.txt).
+- Sin port_menu_* en patch.c: no hay filas de velocidad ni idioma. SELECT y LTRIGGER (misma posición) quedan como
+  una sola acción "SELECT, LTRIGGER". Compila; **probar en consola**.

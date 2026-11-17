@@ -350,6 +350,9 @@ static int s_caseInsensitiveCompare(id self, SEL _c, id o) {
     int r = strcasecmp(ns_cstr(self), ns_cstr(o));
     return r < 0 ? -1 : r > 0;
 }
+static int s_compareOptions(id self, SEL _c, id o, unsigned opts) {
+    return opts & 1 ? s_caseInsensitiveCompare(self, _c, o) : s_compare(self, _c, o);
+}
 static int s_intValue(id self, SEL _c) { return atoi(ns_cstr(self)); }
 static long long s_longLongValue(id self, SEL _c) { return atoll(ns_cstr(self)); }
 static float s_floatValue(id self, SEL _c) { return strtof(ns_cstr(self), NULL); }
@@ -639,6 +642,7 @@ static const nmethod nsstring_i[] = {
     NM("characterAtIndex:", s_characterAtIndex), NM("getCharacters:range:", s_getCharacters),
     NM("isEqualToString:", s_isEqualToString), NM("isEqual:", s_isEqual), NM("hash", s_hash),
     NM("compare:", s_compare), NM("caseInsensitiveCompare:", s_caseInsensitiveCompare),
+    NM("compare:options:", s_compareOptions),
     NM("intValue", s_intValue), NM("integerValue", s_intValue), NM("longLongValue", s_longLongValue),
     NM("floatValue", s_floatValue), NM("doubleValue", s_doubleValue), NM("boolValue", s_boolValue),
     NM("stringByAppendingString:", s_stringByAppendingString), NM("stringByAppendingFormat:", s_stringByAppendingFormat),
@@ -1005,11 +1009,21 @@ static void e_dealloc(ns_enum *self, SEL _c) {
     objc_free(self);
 }
 
+id plist_load(const char *path);
+static id a_withContentsOfFile(objc_class *cls, SEL _c, id path) {
+    id r = plist_load(ns_cstr(path));
+    if (r && !objc_is_kind(r, c_NSArray)) { // el plist no es un array
+        objc_release(r);
+        r = NULL;
+    }
+    return r ? AR(r) : NULL;
+}
 static const nmethod nsarray_c[] = {
     NM("array", a_array), NM("arrayWithObject:", a_arrayWithObject), NM("arrayWithObjects:", a_arrayWithObjects),
     NM("arrayWithObjects:count:", a_arrayWithObjects_count), NM("arrayWithArray:", a_arrayWithArray),
     NM("arrayWithCapacity:", a_arrayWithCapacity), NM("set", a_array), NM("setWithObject:", a_setWithObject),
-    NM("setWithObjects:", a_arrayWithObjects), NM("setWithArray:", a_arrayWithArray), {0}};
+    NM("setWithObjects:", a_arrayWithObjects), NM("setWithArray:", a_arrayWithArray),
+    NM("arrayWithContentsOfFile:", a_withContentsOfFile), {0}};
 static const nmethod nsarray_i[] = {
     NM("initWithObjects:", a_initWithObjects), NM("initWithArray:", a_initWithArray),
     NM("initWithCapacity:", a_initWithCapacity), NM("dealloc", a_dealloc), NM("count", a_count),
@@ -1179,6 +1193,10 @@ static id d_mutableCopy(ns_dict *self, SEL _c) { return d_initWithDictionary(obj
 static void d_addEntries(ns_dict *self, SEL _c, ns_dict *o) { d_initWithDictionary(self, _c, o); }
 static int plist_write(const char *path, id obj);
 static int d_writeToFile(ns_dict *self, SEL _c, id path, int atomic) { return plist_write(ns_cstr(path), self); }
+static uint64_t d_fileSize(ns_dict *self, SEL _c) { // NSDictionary(NSFileAttributes)
+    ns_number *n = (ns_number *)ns_dict_get(self, ns_str("NSFileSize"));
+    return n ? (uint64_t)num_i(n) : 0;
+}
 
 static const nmethod nsdict_c[] = {
     NM("dictionary", d_dictionary), NM("dictionaryWithObject:forKey:", d_withObjectForKey),
@@ -1194,7 +1212,7 @@ static const nmethod nsdict_i[] = {
     NM("removeAllObjects", d_removeAll), NM("allKeys", d_allKeys), NM("allValues", d_allValues),
     NM("keyEnumerator", d_keyEnumerator), NM("countByEnumeratingWithState:objects:count:", d_countByEnumerating),
     NM("copy", d_copy), NM("mutableCopy", d_mutableCopy), NM("addEntriesFromDictionary:", d_addEntries),
-    NM("writeToFile:atomically:", d_writeToFile), {0}};
+    NM("writeToFile:atomically:", d_writeToFile), NM("fileSize", d_fileSize), {0}};
 
 // ================================================================ NSData
 
@@ -1237,6 +1255,8 @@ static id dt_withBytesNoCopyFree(objc_class *cls, SEL _c, void *b, int n, int fr
 }
 static id dt_withContentsOfFile(objc_class *cls, SEL _c, id path) {
     id d = data_from_file(cls, ns_cstr(path));
+    if (!d)
+        l_error("dataWithContentsOfFile: no existe %s", path ? ns_cstr(path) : "(nil)");
     return d ? AR(d) : NULL;
 }
 static id dt_initWithContentsOfFile(id self, SEL _c, id path) {
@@ -1266,6 +1286,7 @@ static void dt_dealloc(ns_data *self, SEL _c) {
 static int dt_length(ns_data *self, SEL _c) { return self->len; }
 static void *dt_bytes(ns_data *self, SEL _c) { return self->bytes; }
 static void dt_getBytes(ns_data *self, SEL _c, void *out, int n) { memcpy(out, self->bytes, n < self->len ? n : self->len); }
+static void dt_getAllBytes(ns_data *self, SEL _c, void *out) { memcpy(out, self->bytes, self->len); }
 static int dt_writeToFile(ns_data *self, SEL _c, id path, int atomic) {
     FILE *f = fopen(ns_cstr(path), "wb");
     if (!f)
@@ -1310,7 +1331,7 @@ static const nmethod nsdata_c[] = {
 static const nmethod nsdata_i[] = {
     NM("initWithContentsOfFile:", dt_initWithContentsOfFile), NM("initWithBytes:length:", dt_initWithBytes),
     NM("initWithLength:", dt_initWithLength), NM("initWithCapacity:", dt_initWithLength), NM("dealloc", dt_dealloc),
-    NM("length", dt_length), NM("bytes", dt_bytes), NM("mutableBytes", dt_bytes), NM("getBytes:length:", dt_getBytes),
+    NM("length", dt_length), NM("bytes", dt_bytes), NM("mutableBytes", dt_bytes), NM("getBytes:length:", dt_getBytes), NM("getBytes:", dt_getAllBytes),
     NM("writeToFile:atomically:", dt_writeToFile), NM("appendBytes:length:", dt_appendBytes),
     NM("appendData:", dt_appendData), NM("setLength:", dt_setLength), NM("increaseLengthBy:", dt_increaseLength),
     NM("copy", dt_copy), {0}};
@@ -1714,14 +1735,20 @@ static id b_preferredLocalizations(id self, SEL _c) {
     ns_array_add(a, ns_str(lang_code));
     return AR(a);
 }
-static const nmethod nsbundle_c[] = {NM("mainBundle", b_mainBundle), {0}};
+// forLocalization: se ignora; b_pathForResource ya prueba <idioma>.lproj y en.lproj
+static id b_pathForResourceLoc(id self, SEL _c, id name, id type, id dir, id loc) {
+    return b_pathForResource(self, _c, name, type, dir);
+}
+static id b_preferredFromArray(id cls, SEL _c, id locs, id prefs) { return b_preferredLocalizations(cls, _c); }
+static const nmethod nsbundle_c[] = {NM("mainBundle", b_mainBundle),
+    NM("preferredLocalizationsFromArray:forPreferences:", b_preferredFromArray), {0}};
 static const nmethod nsbundle_i[] = {
     NM("resourcePath", b_resourcePath), NM("bundlePath", b_resourcePath),
     NM("pathForResource:ofType:", b_pathForResource2), NM("pathForResource:ofType:inDirectory:", b_pathForResource),
     NM("bundleIdentifier", b_bundleIdentifier), NM("infoDictionary", b_infoDictionary),
     NM("localizedInfoDictionary", b_infoDictionary), NM("objectForInfoDictionaryKey:", b_objectForInfoKey),
     NM("localizedStringForKey:value:table:", b_localizedString), NM("preferredLocalizations", b_preferredLocalizations),
-    {0}};
+    NM("pathForResource:ofType:inDirectory:forLocalization:", b_pathForResourceLoc), {0}};
 
 // NSUserDefaults: diccionario persistido en DATA_PATH/Library/Preferences/defaults.txt
 #define DEFAULTS_PATH DATA_PATH "Library/Preferences/defaults.txt"
@@ -1830,17 +1857,29 @@ static id fm_contents(id self, SEL _c, id path, id *err) {
 }
 static id fm_attributes(id self, SEL _c, id path, id *err) {
     struct stat st;
-    if (stat(ns_cstr(path), &st))
+    if (stat(ns_cstr(path), &st)) {
+        l_error("attributesOfItemAtPath: no existe %s", path ? ns_cstr(path) : "(nil)");
         return NULL;
+    }
     id d = ns_dict_new();
     ns_dict_set(d, ns_str("NSFileSize"), ns_num_int(st.st_size));
     ns_dict_set(d, ns_str("NSFileType"), ns_str(S_ISDIR(st.st_mode) ? "NSFileTypeDirectory" : "NSFileTypeRegular"));
     return AR(d);
 }
 static int fm_createFile(id self, SEL _c, id path, ns_data *data, id attrs) {
-    FILE *f = fopen(ns_cstr(path), "wb");
-    if (!f)
+    const char *p = ns_cstr(path);
+    FILE *f = fopen(p, "wb");
+    const char *slash = strrchr(p, '/');
+    if (!f && slash) { // Inotia 4: save<N>.dat va en <md5 de HubSave>/, carpeta que solo crea el login del Hub
+        char dir[512];
+        snprintf(dir, sizeof(dir), "%.*s", (int)(slash - p), p);
+        mkdir_p(dir);
+        f = fopen(p, "wb");
+    }
+    if (!f) {
+        l_error("createFileAtPath: no se pudo crear %s", p);
         return 0;
+    }
     if (data)
         fwrite(data->bytes, 1, data->len, f);
     fclose(f);
@@ -1860,6 +1899,67 @@ static const nmethod nsfm_i[] = {
     NM("fileAttributesAtPath:traverseLink:", fm_attributes), NM("createFileAtPath:contents:attributes:", fm_createFile),
     NM("contentsAtPath:", fm_contentsAtPath), NM("currentDirectoryPath", fm_currentDir),
     NM("isWritableFileAtPath:", fm_yes), NM("isReadableFileAtPath:", fm_exists), {0}};
+
+// NSFileHandle sobre FILE*. Los unsigned long long van en r2:r3 / r0:r1 igual que en iOS.
+typedef struct {
+    objc_class *isa;
+    FILE *f;
+} ns_fh;
+static objc_class *c_NSFileHandle;
+static id fh_open(id path, const char *mode) {
+    FILE *f = fopen(ns_cstr(path), mode);
+    l_debug("NSFileHandle %s (%s) -> %p", ns_cstr(path), mode, f);
+    if (!f)
+        return NULL;
+    ns_fh *h = objc_alloc(c_NSFileHandle);
+    h->f = f;
+    return AR(h);
+}
+static id fh_reading(id cls, SEL _c, id path) { return fh_open(path, "rb"); }
+static id fh_writing(id cls, SEL _c, id path) { return fh_open(path, "r+b"); } // como iOS: no crea ni trunca
+static id fh_readLength(ns_fh *self, SEL _c, unsigned n) {
+    ns_data *d = data_new(c_NSMutableData, NULL, n, 1);
+    d->len = self->f ? (int)fread(d->bytes, 1, n, self->f) : 0;
+    return AR(d);
+}
+static id fh_readToEnd(ns_fh *self, SEL _c) {
+    long cur = ftell(self->f);
+    fseek(self->f, 0, SEEK_END);
+    long end = ftell(self->f);
+    fseek(self->f, cur, SEEK_SET);
+    return fh_readLength(self, _c, end > cur ? (unsigned)(end - cur) : 0);
+}
+static void fh_write(ns_fh *self, SEL _c, ns_data *d) {
+    if (self->f && d)
+        fwrite(d->bytes, 1, d->len, self->f);
+}
+static void fh_seek(ns_fh *self, SEL _c, uint64_t off) { fseek(self->f, (long)off, SEEK_SET); }
+static uint64_t fh_seekEnd(ns_fh *self, SEL _c) {
+    fseek(self->f, 0, SEEK_END);
+    return ftell(self->f);
+}
+static uint64_t fh_offset(ns_fh *self, SEL _c) { return ftell(self->f); }
+static void fh_truncate(ns_fh *self, SEL _c, uint64_t off) {
+    fflush(self->f);
+    ftruncate(fileno(self->f), (off_t)off);
+    fseek(self->f, (long)off, SEEK_SET);
+}
+static void fh_sync(ns_fh *self, SEL _c) { fflush(self->f); }
+static void fh_close(ns_fh *self, SEL _c) {
+    if (self->f)
+        fclose(self->f);
+    self->f = NULL;
+}
+static void fh_dealloc(ns_fh *self, SEL _c) {
+    fh_close(self, _c);
+    objc_free(self);
+}
+static const nmethod nsfh_c[] = {NM("fileHandleForReadingAtPath:", fh_reading),
+    NM("fileHandleForWritingAtPath:", fh_writing), NM("fileHandleForUpdatingAtPath:", fh_writing), {0}};
+static const nmethod nsfh_i[] = {NM("readDataOfLength:", fh_readLength), NM("readDataToEndOfFile", fh_readToEnd),
+    NM("writeData:", fh_write), NM("seekToFileOffset:", fh_seek), NM("seekToEndOfFile", fh_seekEnd),
+    NM("offsetInFile", fh_offset), NM("truncateFileAtOffset:", fh_truncate), NM("synchronizeFile", fh_sync),
+    NM("closeFile", fh_close), NM("dealloc", fh_dealloc), {0}};
 
 // NSLocale
 static id lc_current(id cls, SEL _c) { return cur_locale; }
@@ -2033,6 +2133,67 @@ id ns_timer_schedule_c(double interval, id target, SEL sel) {
     return t;
 }
 
+// CFRunLoopTimer (de Feanor) sobre un ns_timer. Inotia 4: CS_knlSetTimer lo crea una vez y después lo rearma
+// con CFRunLoopTimerSetNextFireDate(now + ms) en cada frame (un disparo que se reprograma).
+typedef struct {
+    objc_class *isa;
+    double interval, fire; // fire: CFAbsoluteTime
+    void *callout, *info;
+    ns_timer *timer; // mientras está en un run loop
+} cf_timer;
+static objc_class *c_CFTimer;
+static double u2d(uint32_t lo, uint32_t hi) {
+    union {
+        uint64_t u;
+        double d;
+    } v = {(uint64_t)hi << 32 | lo};
+    return v.d;
+}
+static void cft_arm(cf_timer *t) {
+    pthread_mutex_lock(&timer_lock);
+    t->timer->next = mono() + (t->fire - ns_now());
+    t->timer->valid = 1;
+    pthread_mutex_unlock(&timer_lock);
+}
+// CFRunLoopTimerCreate(alloc, CFAbsoluteTime fire, CFTimeInterval interval, flags, order, callout, ctx*):
+// ABI de Darwin: los double van en r1:r2 y r3:[sp] (sin alinear a par), el resto en la pila.
+static id cf_runLoopTimerCreate(void *alloc, uint32_t f_lo, uint32_t f_hi, uint32_t i_lo, uint32_t i_hi, uint32_t flags,
+                                uint32_t order, void *callout, uint32_t *ctx) {
+    cf_timer *t = objc_alloc(c_CFTimer);
+    t->interval = u2d(i_lo, i_hi);
+    t->fire = u2d(f_lo, f_hi);
+    t->callout = callout;
+    t->info = ctx ? (void *)ctx[1] : NULL; // CFRunLoopTimerContext {version, info, retain, release, copyDescription}
+    l_info("CFRunLoopTimerCreate: cada %.3f s (fire en %.3f s) -> 0x%08X", t->interval, t->fire - ns_now(),
+           (unsigned)((uintptr_t)callout - MACHO_SLIDE));
+    return t;
+}
+static void cft_fire(cf_timer *self, SEL _c, id nstimer) {
+    call_guest(self->callout, (uint32_t)self, (uint32_t)self->info, 0, 0);
+}
+static void cf_runLoopAddTimer(id rl, cf_timer *t, id mode) {
+    if (!t || t->timer)
+        return;
+    // interval 0 = un disparo: el ns_timer queda dormido hasta el próximo SetNextFireDate
+    t->timer = ns_timer_schedule_c(t->interval > 0 ? t->interval : 1e9, t, sel_registerName("_cfFire:"));
+    cft_arm(t);
+}
+static void cf_runLoopTimerSetNextFireDate(cf_timer *t, uint32_t d_lo, uint32_t d_hi) {
+    t->fire = u2d(d_lo, d_hi);
+    if (t->timer)
+        cft_arm(t);
+}
+static void cf_runLoopRemoveTimer(id rl, cf_timer *t, id mode) {
+    if (t && t->timer) {
+        MSG0(t->timer, "invalidate");
+        objc_release(t->timer);
+        t->timer = NULL;
+    }
+}
+static void cf_runLoopTimerInvalidate(cf_timer *t) { cf_runLoopRemoveTimer(NULL, t, NULL); }
+static void cft_invalidate(cf_timer *self, SEL _c) { cf_runLoopRemoveTimer(NULL, self, NULL); }
+static const nmethod cftimer_i[] = {NM("_cfFire:", cft_fire), NM("invalidate", cft_invalidate), {0}};
+
 // performSelector:withObject:afterDelay: = timer de un disparo con argumento
 void ns_perform_later(id target, SEL s, id arg, double delay) {
     ns_timer *t = timer_make(delay, target, s, arg, 0);
@@ -2089,6 +2250,24 @@ double ns_run_timers(void) {
         objc_release(t);
     }
     return wait < 0 ? 0 : wait;
+}
+
+// TMP Inotia 4 (watchdog): estado de los timers cuando el juego deja de presentar
+void ns_timers_log(void) {
+    if (pthread_mutex_trylock(&timer_lock))
+        return l_error("timers: lock tomado");
+    double now = mono();
+    l_info("timers: %d", ntimers);
+    for (int i = 0; i < ntimers; i++) {
+        ns_timer *t = timers[i];
+        l_info("  -[%s %s] cada %.3f prox %+.3f valido %d rep %d %s", class_getName(object_getClass(t->target)), t->sel,
+               t->interval, t->next - now, t->valid, t->repeats, t->owner == main_thread_id ? "main" : "otro hilo");
+        if (object_getClass(t->target) == c_CFTimer) {
+            cf_timer *c = (cf_timer *)t->target;
+            l_info("    CF fire %+.3f callout 0x%X", c->fire - ns_now(), (unsigned)((uintptr_t)c->callout - MACHO_SLIDE));
+        }
+    }
+    pthread_mutex_unlock(&timer_lock);
 }
 
 // Run loop de un hilo secundario: en iOS es propio del hilo (solo sus timers). El tick de UIKit
@@ -2602,6 +2781,9 @@ const import_entry foundation_imports[] = {
     F(CFAbsoluteTimeGetCurrent, cf_absTime), F(CFLocaleCopyCurrent, cf_localeCopyCurrent),
     F(CFLocaleGetSystem, cf_localeCopyCurrent), F(CFLocaleGetValue, cf_localeGetValue),
     F(CFRunLoopGetCurrent, cf_runLoopGetCurrent), F(CFRunLoopGetMain, cf_runLoopGetCurrent),
+    F(CFRunLoopTimerCreate, cf_runLoopTimerCreate), F(CFRunLoopAddTimer, cf_runLoopAddTimer),
+    F(CFRunLoopRemoveTimer, cf_runLoopRemoveTimer), F(CFRunLoopTimerInvalidate, cf_runLoopTimerInvalidate),
+    F(CFRunLoopTimerSetNextFireDate, cf_runLoopTimerSetNextFireDate),
     F(CFRunLoopRunInMode, cf_runLoopRunInMode), F(CFRunLoopAddSource, cf_noop), F(CFRunLoopRemoveSource, cf_noop),
     F(CFReadStreamSetProperty, cf_zero), F(CFWriteStreamSetProperty, cf_zero), F(CFSocketCreate, cf_null),
     F(CFSocketCopyAddress, cf_null), F(CFSocketCreateRunLoopSource, cf_null), F(CFSocketGetNative, cf_zero),
@@ -2690,6 +2872,8 @@ void foundation_init(void) {
     c_NSBundle = objc_define("NSBundle", "NSObject", 8, nsbundle_i, nsbundle_c);
     c_NSUserDefaults = objc_define("NSUserDefaults", "NSObject", 8, nsud_i, nsud_c);
     c_NSFileManager = objc_define("NSFileManager", "NSObject", 8, nsfm_i, nsfm_c);
+    c_CFTimer = objc_define("__NSCFTimer", "NSObject", sizeof(cf_timer), cftimer_i, NULL);
+    c_NSFileHandle = objc_define("NSFileHandle", "NSObject", sizeof(ns_fh), nsfh_i, nsfh_c);
     c_NSLocale = objc_define("NSLocale", "NSObject", 8, nslocale_i, nslocale_c);
     c_NSDate = objc_define("NSDate", "NSObject", sizeof(ns_date), nsdate_i, nsdate_c);
     c_NSTimer = objc_define("NSTimer", "NSObject", sizeof(ns_timer), nstimer_i, nstimer_c);

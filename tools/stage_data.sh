@@ -5,7 +5,8 @@
 #   rebase.bin     palabras con direcciones absolutas  } tools/ios_prep.py (análisis del Mach-O)
 #   binds.bin      imports -> frameworks de Apple       }
 #   nib.txt        MainWindow.nib precompilado (tools/nib_prep.py), si el juego tiene nib
-#   controls.txt   botones -> toques (se crea con valores de ejemplo si no existe)
+#   controls.txt   botones -> toques (extras/controls.txt si no existe)
+#   game_app/memorytext_es/pt.dat  textos traducidos, si hay pack de traducción (TRANSLATION=carpeta)
 #   Documents/     partidas (no se toca)      logs/  <slug>_NNN.log (los escribe el loader)
 # Además convierte la música .m4a/.mp3/.caf a .ogg (mismo nombre) para AudioFile (audio.c).
 # Nada de esto se commitea. Uso: tools/stage_data.sh [ruta/a/X.app]
@@ -28,7 +29,14 @@ for n in "$APP"/*.nib; do
   [ -f "$n" ] || continue
   python3 -I tools/nib_prep.py "$n" "$OUT/nibs/$(basename "$n" .nib).txt" > /dev/null 2>&1 || echo "AVISO: nib $n sin convertir"
 done
-[ -f "$OUT/controls.txt" ] || cp tools/controls.example.txt "$OUT/controls.txt"
+[ -f "$OUT/controls.txt" ] || cp "$( [ -f extras/controls.txt ] && echo extras/controls.txt || echo tools/controls.example.txt)" "$OUT/controls.txt"
+# Traducción español/portugués: pack del release (TRANSLATION=carpeta) o translation/ local -> memorytext_es/pt.dat
+TR="${TRANSLATION:-translation}"
+if [ -f "$TR/index.json" ] && [ -f "$OUT/game_app/memorytext_en.dat" ]; then
+  for l in es pt; do
+    python3 -I tools/translate/build.py "$OUT/game_app/memorytext_en.dat" "$TR" $l "$OUT/game_app/memorytext_$l.dat" | tail -1
+  done
+fi
 # Música: AAC/MP3/CAF -> Ogg Vorbis (AudioFileOpenURL busca <nombre>.ogg)
 if command -v ffmpeg > /dev/null; then
   find "$OUT/game_app" -type f ! -name '._*' \( -name '*.m4a' -o -name '*.mp3' -o -name '*.caf' -o -name '*.aac' \) | while read -r f; do
